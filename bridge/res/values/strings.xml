@@ -1,0 +1,1 @@
+<resources><string name="service_description">用于本次提速测试，仅读取和点击前台 U校园控件。仅接受通过 ADB 连接的电脑，不联网、不录音。可随时在本应用停止服务。</string></resources>

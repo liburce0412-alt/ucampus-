@@ -1,0 +1,190 @@
+{
+  "apk": {
+    "package": "cn.unipus.cloud",
+    "historical_installed_version": "2.8.8",
+    "official_reference_version": "2.8.9",
+    "raw_apk_included": false
+  },
+  "findings": [
+    {
+      "id": "training_deeplink",
+      "kind": "deeplink",
+      "value": "unipuscloud://open?page=ulistenspeak",
+      "benefit": "实际到达 U听说模块，减少入口导航；不直接定位某个周任务。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "audio_state",
+      "kind": "cordova_bridge",
+      "value": [
+        "UCAudioPlugin.prepare(url, interval)",
+        "isPlaying()",
+        "getDuration()",
+        "getCurrentDuration()",
+        "UCFooPlugin.getAudioState()"
+      ],
+      "benefit": "若当前训练使用这些桥接器，可根据播放状态推进，避免反复截图猜时间；可能取得当前媒体URL。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "recording_events",
+      "kind": "cordova_bridge",
+      "value": [
+        "UCClioPlugin.start(text, rank, type)",
+        "UCClioPlugin.stop()",
+        "UCClioPlugin.onStatus",
+        "UCSOEPlugin.start(param)",
+        "UCSOEPlugin.stop()",
+        "UCSOEPlugin.result(correctIds)"
+      ],
+      "benefit": "已观察跟读的 UCSOEPlugin 开始/结果日志，可配合录音文字状态减少等待。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "http_queue",
+      "kind": "cordova_bridge",
+      "value": [
+        "UCHttpTaskPlugin.backgroundRequest(id, payload, nretry)",
+        "backgroundResponse(callback)",
+        "backgroundCancel(callback, id)"
+      ],
+      "benefit": "可作为未来定位网络请求的观察入口。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "packed_native_logic",
+      "kind": "analysis_limit",
+      "value": [
+        "Application=s.h.e.l.l.S",
+        "classes.dex=13880 bytes",
+        "assets/ijiami.dat",
+        "assets/ijiami.ajm",
+        "assets/ijm_lib/arm64-v8a/libexec.so"
+      ],
+      "benefit": "及时识别爱加密壳，避免重复反编译和把壳代码当作业务代码。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "mika_reuse",
+      "kind": "architecture",
+      "value": [
+        "复用设备连接和已有画面",
+        "控件树优先，必要时补图",
+        "依据界面变化结束等待",
+        "批处理后返回状态差异"
+      ],
+      "benefit": "参考Mika手机控制的速度和便利性，减少现有执行器的重复调用。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "registered_bridge_classes",
+      "kind": "cordova_registration",
+      "value": [
+        "cn.unipus.wbv.plugin.UCAudioPlugin",
+        "cn.unipus.wbv.plugin.UCClioPlugin",
+        "cn.unipus.wbv.plugin.UCSOEPlugin",
+        "cn.unipus.wbv.plugin.UCHttpTaskPlugin",
+        "cn.unipus.wbv.plugin.ucpcm.UCPcmPlugin"
+      ],
+      "benefit": "给下一轮动态观察确定类名和服务动作对应关系。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "audio_completion_states",
+      "kind": "state_contract",
+      "value": {
+        "UCAudioPlugin": {
+          "PREPARED": 3,
+          "PLAYING": 4,
+          "PROGRESS": 5,
+          "PAUSE": 6,
+          "AUTOCOMPLETE": 8,
+          "ERROR": 9
+        },
+        "UCPcmPlugin": {
+          "PLAYING": 1,
+          "PAUSED": 2,
+          "STOPPED": 3,
+          "BUFFERING": 4,
+          "FINISHED": 5,
+          "ERROR": 9
+        }
+      },
+      "benefit": "音频自然结束可替代猜时长；两个播放器的状态编号必须分别解释。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "pcm_is_playback",
+      "kind": "media_boundary",
+      "value": [
+        "UCPcmPlugin.preparePcm",
+        "UCPcmPlugin.writePcmData",
+        "default 16000Hz mono 16bit"
+      ],
+      "benefit": "提供播放链路的观察位置；可核对 AI 声音何时播完。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "training_ui_anchors",
+      "kind": "ui_selectors",
+      "value": [
+        "tvStartTraining",
+        "tvTaskTitle",
+        "tvWeekProgress",
+        "tvWeekTotalCount",
+        "tvCompletionHint",
+        "ivPlayPause",
+        "tvPlayerTime",
+        "bnv_bottom"
+      ],
+      "benefit": "原生首页可用 tvStartTraining、tvWeekProgress；H5 需兼顾 accessible description，自绘按钮继续截图定位。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    },
+    {
+      "id": "native_recording_path",
+      "kind": "native_evidence",
+      "value": [
+        "com.chivox.AIEngine",
+        "com.stkouyu.SkEgn",
+        "com.zhiyan.speech_eval_sdk.JNI",
+        "JNI.setData -> soe_set_data",
+        "JNI.getResult -> soe_get_result"
+      ],
+      "benefit": "动态观察录音开始/结束和评测返回，区分本地处理与提交完成。",
+      "evidence": [
+        "docs/APK-ANALYSIS.md"
+      ],
+      "current_device_verified": false
+    }
+  ]
+}

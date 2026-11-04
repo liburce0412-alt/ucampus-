@@ -1,0 +1,4 @@
+-r requirements.txt
+# Only needed for local transcription or scrcpy video-frame decoding.
+faster-whisper>=1,<2
+av>=14,<19

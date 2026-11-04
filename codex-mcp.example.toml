@@ -1,0 +1,8 @@
+# Replace these local paths and the inspected display ID. No automatic registration.
+[mcp_servers.ucampus_control]
+command = "<absolute-path-to-python.exe>"
+args = ["-X", "utf8", "<absolute-repo-path>/bridge_client.py", "--port", "8794", "--display-id", "0", "serve"]
+
+[mcp_servers.ucampus_cached]
+command = "<absolute-path-to-python.exe>"
+args = ["-X", "utf8", "<absolute-repo-path>/ucampus_readonly.py", "--ui-dir", "<absolute-evidence-directory>", "serve"]

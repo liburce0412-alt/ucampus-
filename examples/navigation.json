@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "action": "click",
+      "before": [{"text": "替换为当前任务标题"}],
+      "target": {"description": "替换为已验证的阶段入口"},
+      "expect": {"text": "替换为进入后才出现的阶段标题"},
+      "timeout": 30
+    }
+  ]
+}
