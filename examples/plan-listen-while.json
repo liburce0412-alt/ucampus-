@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "action": "capture",
+      "before": [{"text": "While-listening"}],
+      "target": {"description": "播放"},
+      "expect": {"text": "进入Post-listening"},
+      "seconds": 240,
+      "timeout": 220
+    }
+  ]
+}

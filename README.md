@@ -16,6 +16,8 @@ Windows + ADB 的本地控制、音频采集和流程执行工具。目标是让
 
 已测无线同页读取中位数 **2265 → 8.09 ms**，不代表整周快 280 倍。完整状态数据 **33347 → 2895 字节**，也不代表计费 token 减少 91%。[测量口径与限制](docs/BENCHMARKS.md)。
 
+一次真实整周训练的执行环境、成绩、失败模式与实测用量见[真实整周执行记录](docs/REAL-RUN-2026-11-08.md)；为什么逐步点击比整阶段计划贵一个量级，见[会话用量与往返口径](docs/TOKEN-NOTES.md)。手势与坐标见[手势手册](docs/GESTURES.md)。
+
 ## 环境
 
 - Windows、PowerShell 7、Python 3.11+（本地验证使用 3.13）。
@@ -110,6 +112,16 @@ python usage_audit.py '<本地会话.jsonl>' --start '2026-11-04T12:00:00+08:00'
 ```
 
 输入 token 中已包含缓存；审计另外列出未缓存输入。推理 token 不重复加入输出。它不读取账号凭据、不输出聊天正文、不估算价格，也不能将不同题型/调试负载直接比较成节省比例。
+
+`usage_audit.py` 读的是 Codex 风格的 `event_msg`/`token_count` 记录。DSH 原生日志（schema v4）
+把用量放在每条 `assistant/message` 的 `data.usage` 里，直接审计会得到 `usage_updates: 0`
+而不报错。对这类日志用同字段、同校验的 `usage_audit_dsh.py`：
+
+```powershell
+python usage_audit_dsh.py '<本地会话.jsonl>' --start '2026-11-01T00:00:00+08:00' --end '2026-11-12T00:00:00+08:00'
+```
+
+两者都要求显式时区、都拒绝计数器重置，都不输出对话正文。
 
 ## 边界与来源
 
