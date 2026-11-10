@@ -75,6 +75,8 @@ New-Item -ItemType File work/run-001/pause.stop
 
 等进程退出并检查断点后再切屏。短词录音会先完成有界清理，暂停不等于立即中断音频。手机打开 U校园会移动同一个任务窗口，不能当作互不影响的第二份界面。
 
+2026-11-10 修复了页面跳转时短暂 `no_active_window` 导致计划提前退出的问题：后置状态在原超时范围内继续只读等待。只有设备明确在动作派发前返回 `ui_changed/node_changed`，才重新核对锚点后有限重试；锁屏、外来窗口和未知点击结果仍停止。[本次耗时复盘](docs/BENCHMARKS.md#2026-11-10-实际耗时回归)显示当前整条流程仍比早期执行慢，不能把控件读取加速当作任务提速。
+
 ## MCP 与已有执行入口
 
 `bridge_client.py --port 8794 --display-id 0 serve` 是 stdio MCP，提供 `ucampus_observe`、`ucampus_click`、`ucampus_batch`，复用同一连接。用 [配置示例](codex-mcp.example.toml) 手动指定路径；仓库不会修改全局配置。

@@ -66,11 +66,20 @@ class Runner:
         self.runtime,self.uid,self.skill=runtime,uid,skill
         self.stop=self.work/'pause.stop'
         self.reads=self.clicks=0
+        self.transition_reads=self.rejected_clicks=0
 
-    def observe(self,wait_ms=0):
+    def observe(self,wait_ms=0,*,during_wait=False):
         if self.stop.exists():raise Paused('Pause requested; inspect the checkpoint before moving the task')
-        self.client.observe(wait_ms=wait_ms);self.reads+=1
+        self.reads+=1
+        try:self.client.observe(wait_ms=wait_ms)
+        except BridgeError as error:
+            if not during_wait or type(error) is not BridgeError or str(error)!='no_active_window':raise
+            # Navigation can briefly remove the root; only bounded readback loops may wait.
+            self.client.last=None;self.transition_reads+=1
+            time.sleep(.15)
+            return False
         if self.client.last['truncated']:raise BridgeError('Incomplete tree; no further action sent')
+        return True
 
     def present(self,item):
         ref=self.client.select(item,missing_ok=True)
@@ -89,37 +98,44 @@ class Runner:
         raise BridgeError('No semantic clickable control; inspect the layout instead of guessing coordinates')
 
     def click(self,step):
-        self.observe();self.anchors(step['before'])
-        if 'expect' in step and self.present(step['expect']):
-            raise BridgeError('Postcondition already present; inspect progress before replaying')
-        ref=self.click_ref(step['target'])
-        self.clicks+=1
-        if not self.client.click(self.client.last['snapshot_id'],ref).get('dispatched'):
-            raise OutcomeUnknown('Click not confirmed; do not replay')
+        for attempt in range(3):
+            self.observe();self.anchors(step['before'])
+            if step['action']=='select' and self.selected(step['target']):return False
+            if 'expect' in step and self.present(step['expect']):
+                raise BridgeError('Postcondition already present; inspect progress before replaying')
+            ref=self.click_ref(step['target'])
+            self.clicks+=1
+            try:result=self.client.click(self.client.last['snapshot_id'],ref)
+            except BridgeError as error:
+                # These exact server errors occur before performAction; unknown outcomes never retry.
+                if type(error) is not BridgeError or str(error) not in ('ui_changed','node_changed'):raise
+                self.rejected_clicks+=1
+                if attempt==2:raise
+                time.sleep(.1)
+                continue
+            if not result.get('dispatched'):raise OutcomeUnknown('Click not confirmed; do not replay')
+            return True
 
     def wait(self,item,timeout,anchors=()):
         deadline=time.monotonic()+timeout
         while True:
-            self.observe(wait_ms=150);self.anchors(anchors)
-            if self.present(item):return
+            if self.observe(wait_ms=150,during_wait=True):
+                self.anchors(anchors)
+                if self.present(item):return
             if time.monotonic()>=deadline:raise OutcomeUnknown('Expected state not observed; do not replay')
 
+    def selected(self,item):
+        leaf=self.client.select(item)
+        parent=self.click_ref(item)
+        return any(self.client.nodes[r].get('checked') or self.client.nodes[r].get('selected') for r in (leaf,parent))
+
     def select(self,step):
-        # Re-resolve by meaning and let the device reject a moving/stale snapshot.
-        self.observe();self.anchors(step['before'])
-        ref=self.click_ref(step['target'])
-        def selected():
-            leaf=self.client.select(step['target'])
-            parent=self.click_ref(step['target'])
-            return any(self.client.nodes[r].get('checked') or self.client.nodes[r].get('selected') for r in (leaf,parent))
-        if selected():return {'already_selected':True}
-        self.clicks+=1
-        if not self.client.click(self.client.last['snapshot_id'],ref).get('dispatched'):
-            raise OutcomeUnknown('Selection dispatch not confirmed')
+        if not self.click(step):return {'already_selected':True}
         deadline=time.monotonic()+step.get('timeout',30)
         while True:
-            self.observe(wait_ms=150);self.anchors(step['before'])
-            if selected():return {'selected':True}
+            if self.observe(wait_ms=150,during_wait=True):
+                self.anchors(step['before'])
+                if self.selected(step['target']):return {'selected':True}
             if time.monotonic()>=deadline:raise OutcomeUnknown('Selected state not exposed or not accepted; inspect, do not tap again')
 
     def capture(self,step,directory):
@@ -144,8 +160,7 @@ class Runner:
                 self.click(step)
                 deadline=time.monotonic()+step.get('timeout',30)
                 while True:
-                    self.observe(wait_ms=150)
-                    if self.present(step['expect']):break
+                    if self.observe(wait_ms=150,during_wait=True) and self.present(step['expect']):break
                     if process.poll() is not None:raise OutcomeUnknown('Capture ended before the playback postcondition')
                     if time.monotonic()>=deadline:raise OutcomeUnknown('Playback outcome unknown; do not replay')
             finally:
@@ -170,7 +185,8 @@ class Runner:
         report={'status':'running','completed':0,'total':len(plan['steps']),'steps':[]}
         began=time.monotonic()
         def save():
-            report.update(elapsed_seconds=round(time.monotonic()-began,3),bridge_reads=self.reads,clicks=self.clicks)
+            report.update(elapsed_seconds=round(time.monotonic()-began,3),bridge_reads=self.reads,clicks=self.clicks,
+                          transition_reads=self.transition_reads,rejected_clicks=self.rejected_clicks)
             temp=self.work/'checkpoint.tmp'
             temp.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
             temp.replace(self.work/'checkpoint.json')

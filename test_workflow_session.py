@@ -55,6 +55,65 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(report['status'],'needs_review');self.assertEqual(report['in_flight'],1)
         self.assertEqual(report['completed'],0)
 
+    def test_navigation_waits_through_empty_root_without_reclicking(self):
+        original=self.client.observe.side_effect
+        empty=True
+        def loading(**kwargs):
+            nonlocal empty
+            if self.page==1 and empty:
+                empty=False;raise BridgeError('no_active_window')
+            original(**kwargs)
+        self.client.observe.side_effect=loading
+        with patch('workflow_session.time.sleep'):
+            result=self.runner.run({'version':1,'steps':self.plan()['steps'][:1]})
+        self.assertEqual(result['completed'],1);self.client.click.assert_called_once()
+        report=json.loads((self.root/'run/checkpoint.json').read_text())
+        self.assertEqual(report['transition_reads'],1)
+
+    def test_empty_root_timeout_and_foreign_or_locked_screen_never_reclick(self):
+        original=self.client.observe.side_effect
+        for error in ('no_active_window','target_not_foreground','device_locked'):
+            with self.subTest(error=error):
+                self.page=0;self.client.click.reset_mock()
+                self.runner=Runner(self.session,self.root/error,self.root)
+                def unreadable(**kwargs):
+                    if self.page:raise BridgeError(error)
+                    original(**kwargs)
+                self.client.observe.side_effect=unreadable
+                step={**self.plan()['steps'][0],'timeout':1}
+                ticks=iter(range(100))
+                with patch('workflow_session.time.sleep'),patch('workflow_session.time.monotonic',side_effect=lambda:next(ticks)):
+                    with self.assertRaisesRegex(BridgeError,'Expected state' if error=='no_active_window' else error):
+                        self.runner.run({'version':1,'steps':[step]})
+                self.client.click.assert_called_once()
+                self.assertEqual(self.runner.transition_reads,1 if error=='no_active_window' else 0)
+
+    def test_rejected_clicks_refresh_the_same_question_before_dispatch(self):
+        original=self.client.click.side_effect
+        errors=iter(('ui_changed','node_changed',None))
+        def reject_then_send(*args):
+            error=next(errors)
+            if error:raise BridgeError(error)
+            return original(*args)
+        self.client.click.side_effect=reject_then_send
+        with patch('workflow_session.time.sleep'):
+            result=self.runner.run({'version':1,'steps':self.plan()['steps'][:1]})
+        self.assertEqual(result['completed'],1);self.assertEqual(self.runner.rejected_clicks,2)
+        self.assertEqual(self.client.click.call_count,3);self.assertEqual(self.page,1)
+
+    def test_rejected_click_retry_limit_and_changed_anchor(self):
+        self.client.click.side_effect=BridgeError('node_changed')
+        with patch('workflow_session.time.sleep'):
+            with self.assertRaisesRegex(BridgeError,'node_changed'):self.runner.run(self.plan())
+        self.assertEqual(self.client.click.call_count,3)
+        self.client.click.reset_mock();self.runner=Runner(self.session,self.root/'changed',self.root)
+        def moved(*args):
+            self.page=1;raise BridgeError('ui_changed')
+        self.client.click.side_effect=moved
+        with patch('workflow_session.time.sleep'):
+            with self.assertRaisesRegex(BridgeError,'anchor changed'):self.runner.run(self.plan())
+        self.client.click.assert_called_once()
+
     def test_existing_checkpoint_cannot_be_reused(self):
         (self.root/'run').mkdir()
         with self.assertRaises(FileExistsError):self.runner.run(self.plan())
@@ -85,9 +144,32 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['completed'],1)
         self.assertEqual(self.client.click.call_args.args[1],'0.1')
 
+    def test_selection_readback_waits_through_empty_root(self):
+        self.pages=[{'0':node('Question'),'0.1':node('Choice')},
+                    {'0':node('Question'),'0.1':node('Choice',checked=True)}]
+        original=self.client.observe.side_effect
+        empty=True
+        def loading(**kwargs):
+            nonlocal empty
+            if self.page and empty:
+                empty=False;raise BridgeError('no_active_window')
+            original(**kwargs)
+        self.client.observe.side_effect=loading
+        with patch('workflow_session.time.sleep'):self.runner.run(self.select_plan())
+        self.client.click.assert_called_once();self.assertEqual(self.runner.transition_reads,1)
+
     def test_selected_option_is_not_toggled_off(self):
         self.pages=[{'0':node('Question'),'0.1':node('Choice',selected=True)}]
         self.runner.run(self.select_plan());self.client.click.assert_not_called()
+
+    def test_rejected_selection_that_becomes_selected_is_not_toggled(self):
+        self.pages=[{'0':node('Question'),'0.1':node('Choice')}]
+        def changed(*args):
+            self.pages[0]['0.1']['checked']=True;raise BridgeError('node_changed')
+        self.client.click.side_effect=changed
+        with patch('workflow_session.time.sleep'):
+            self.runner.run(self.select_plan())
+        self.client.click.assert_called_once()
 
     def test_question_change_after_selection_stops_before_submit(self):
         self.pages=[{'0':node('Question'),'0.1':node('Choice')},{'0':node('Other question'),'0.1':node('Choice',checked=True)}]
@@ -130,6 +212,23 @@ class WorkflowTests(unittest.TestCase):
         with patch('workflow_session.subprocess.Popen',side_effect=start):
             with self.assertRaises(OutcomeUnknown):self.runner.capture({**click('First','Next','Second'),'action':'capture','seconds':5},directory)
         self.assertEqual(events,['ready','play','release'])
+
+    def test_capture_exit_is_checked_while_window_is_empty(self):
+        self.runner.uid=10001
+        directory=self.root/'capture-step';output=directory/'audio'
+        def start(*args,**kwargs):
+            output.mkdir();(output/'ready.json').write_text(json.dumps({'uid':10001,'mode':'capture'}))
+            return process
+        def finish(**kwargs):
+            self.assertTrue((output/'capture.stop').exists())
+            (output/'result.json').write_text(json.dumps({'policy_released':True,'seconds':2}))
+        process=Mock(returncode=0);process.poll.return_value=0;process.wait.side_effect=finish
+        def play(_):self.client.observe.side_effect=BridgeError('no_active_window')
+        self.runner.click=Mock(side_effect=play)
+        with patch('workflow_session.subprocess.Popen',side_effect=start),patch('workflow_session.time.sleep'):
+            with self.assertRaisesRegex(OutcomeUnknown,'Capture ended'):
+                self.runner.capture({**click('First','Next','Second'),'action':'capture','seconds':5},directory)
+        self.runner.click.assert_called_once();process.wait.assert_called_once()
 
 
 class InjectionOwnershipTests(unittest.TestCase):
