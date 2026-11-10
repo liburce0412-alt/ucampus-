@@ -1,11 +1,15 @@
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock,patch
 from secondary_word_trial import display_adb
 from screen_frames import check_capture_display
 
 
 class SecondaryWordTests(unittest.TestCase):
+    def setUp(self):
+        guard=patch('screen_frames.check_display_visible')
+        self.visible=guard.start();self.addCleanup(guard.stop)
+
     def test_native_capture_is_mapped_to_the_same_single_virtual_screen(self):
         normal=Mock(side_effect=[b'Display: mDisplayId=0\nDisplay: mDisplayId=10 (organized)',
                                 b'Display 11529215046282202226 (Virtual display): displayName="scrcpy"\n',b'PNG'])

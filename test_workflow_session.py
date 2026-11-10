@@ -230,6 +230,70 @@ class WorkflowTests(unittest.TestCase):
                 self.runner.capture({**click('First','Next','Second'),'action':'capture','seconds':5},directory)
         self.runner.click.assert_called_once();process.wait.assert_called_once()
 
+    def test_playback_clock_requires_progress_and_remaining_media_before_reset(self):
+        self.runner.uid=10001
+        box=[596,2883,843,3131]
+        step={'action':'capture','before':[{'text':'While-listening'}],'target':{'bounds':box},
+              'clock':'00:00/00:03','seconds':6,'timeout':4}
+        validate({'version':1,'steps':[step]},self.root)
+        for label,states,error in (
+                ('finished',[(0,0),(1,1),(3,3),(3,0)],None),
+                ('early',[(1,1),(1.1,0)],'reset before'),
+                ('never_started',[(0,0),(5,0)],'outcome unknown')):
+            with self.subTest(label=label):
+                directory=self.root/label;output=directory/'audio';now=[0];playing=[False]
+                readings=iter(states);self.client.click.reset_mock()
+                def observe(**kwargs):
+                    moment,current=next(readings) if playing[0] else (0,0);now[0]=moment
+                    self.client.nodes={'0':node('While-listening'),'0.1':node(f'00:0{current}/00:03'),
+                                       '0.2':node('',bounds=box)}
+                    self.client.last={'snapshot_id':'fresh','truncated':False}
+                def play(*args):playing[0]=True;return {'dispatched':True}
+                def start(*args,**kwargs):
+                    output.mkdir();(output/'ready.json').write_text(json.dumps({'uid':10001,'mode':'capture'}))
+                    return process
+                def finish(**kwargs):
+                    self.assertTrue((output/'capture.stop').exists())
+                    (output/'result.json').write_text(json.dumps({'policy_released':True,'seconds':now[0]}))
+                process=Mock(returncode=0);process.poll.return_value=None;process.wait.side_effect=finish
+                self.client.observe.side_effect=observe;self.client.click.side_effect=play
+                with patch('workflow_session.subprocess.Popen',side_effect=start),patch('workflow_session.time.monotonic',side_effect=lambda:now[0]):
+                    if error:
+                        with self.assertRaisesRegex(OutcomeUnknown,error):self.runner.capture(step,directory)
+                    else:self.assertTrue(self.runner.capture(step,directory)['policy_released'])
+                self.client.click.assert_called_once();process.wait.assert_called_once()
+
+    def test_playback_plan_rejects_ambiguous_end_modes_and_uncalibrated_bounds(self):
+        step={'action':'capture','before':[{'text':'While-listening'}],'target':{'bounds':[596,2883,843,3131]},
+              'clock':'00:00/02:41','seconds':180,'timeout':170}
+        for change in ({'expect':{'text':'Post-listening'}},{'clock':'00:00/00:00'},
+                       {'timeout':30},{'target':{'bounds':[0,0,2000,3200]}}):
+            with self.assertRaises(ValueError):validate({'version':1,'steps':[{**step,**change}]},self.root)
+
+    def test_transcriber_finishes_after_release_even_when_capture_fails(self):
+        import threading
+        self.runner.uid=10001
+        for released in (True,False):
+            with self.subTest(released=released):
+                directory=self.root/f'capture-{released}';output=directory/'audio'
+                ended=threading.Event()
+                def start(*args,**kwargs):
+                    output.mkdir();(output/'ready.json').write_text(json.dumps({'uid':10001,'mode':'capture'}))
+                    return process
+                def finish(**kwargs):
+                    self.assertTrue((output/'capture.stop').exists())
+                    (output/'result.json').write_text(json.dumps({'policy_released':released,'seconds':2}))
+                def transcribe(source,stop,destination):
+                    while not stop.exists():ended.wait(.005)
+                    self.assertTrue((output/'result.json').exists());ended.set()
+                    raise ValueError('decoder failed')
+                process=Mock(returncode=0);process.poll.return_value=None;process.wait.side_effect=finish
+                self.runner.capture_transcriber=transcribe;self.runner.click=Mock()
+                with patch('workflow_session.subprocess.Popen',side_effect=start),patch.object(self.runner,'observe',return_value=True),patch.object(self.runner,'present',return_value=True):
+                    with self.assertRaisesRegex(BridgeError,'transcription failed' if released else 'release not confirmed'):
+                        self.runner.capture({**click('First','Next','Second'),'action':'capture','seconds':5},directory)
+                self.assertTrue(ended.is_set());self.runner.click.assert_called_once()
+
 
 class InjectionOwnershipTests(unittest.TestCase):
     def test_failed_upload_removes_only_owned_temporary_path_and_restores_controls(self):

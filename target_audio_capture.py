@@ -74,7 +74,6 @@ def main():
     sys.path.insert(0,str(args.skill.resolve(strict=True)/'scripts'))
     import runtime
     serial=runtime.serial()
-    if ':' not in serial:raise ValueError('Use the authorized wireless connection')
     args.output.mkdir(parents=True)
     result={'uid':args.uid,'requested_seconds':args.seconds,'stop_file':str(stop_file)};process=None
     finished=threading.Event();stop_report={'stop_requested':False};watcher=None

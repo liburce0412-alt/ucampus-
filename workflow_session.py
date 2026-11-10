@@ -3,8 +3,10 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
+import threading
 import time
 
 from audio_injection_trial import inject_once, pcm16, word_turn
@@ -19,7 +21,13 @@ class Paused(BridgeError):
     pass
 
 
-def selector(value):
+def selector(value,*,bounds=False):
+    if bounds and isinstance(value,dict) and set(value)=={'bounds'}:
+        box=value['bounds']
+        if (not isinstance(box,list) or len(box)!=4 or any(type(n) is not int for n in box)
+                or not (0<=box[0]<box[2]<=1440 and 0<=box[1]<box[3]<=3200)):
+            raise ValueError('Use freshly inspected 1440x3200 control bounds')
+        return
     if (not isinstance(value,dict) or not value or set(value)-{'text','id','description'}
             or any(not isinstance(v,str) or not v for v in value.values())):
         raise ValueError('Use exact nonempty text/id/description selectors')
@@ -36,16 +44,20 @@ def validate(plan,base):
         if not isinstance(step,dict) or step.get('action') not in required:
             raise ValueError('Unknown step action')
         fields=required[step['action']]|{'action','before'}
+        if step['action']=='capture' and 'clock' in step:fields=(fields-{'expect'})|{'clock'}
         if not fields<=set(step) or set(step)-fields-{'timeout'}:
             raise ValueError('Missing or unknown step fields')
         if not isinstance(step['before'],list) or not 1<=len(step['before'])<=8:
             raise ValueError('Each step requires current page/question anchors')
         for item in step['before']:selector(item)
         for key in ('target','expect'):
-            if key in step:selector(step[key])
+            if key in step:selector(step[key],bounds=key=='target' and step['action']=='capture')
         timeout=step.get('timeout',30)
         if type(timeout) is not int or not 1<=timeout<=900:raise ValueError('Timeout must be 1..900 seconds')
         if step['action']=='capture':
+            if 'clock' in step:
+                current,total=clock_value(step['clock'])
+                if current==total or timeout<total-current:raise ValueError('Wait timeout must cover an unfinished clip')
             if type(step['seconds']) is not int or not 1<=step['seconds']<=900:
                 raise ValueError('Capture must be 1..900 seconds')
             if timeout>step['seconds']:raise ValueError('Capture duration must cover the whole wait timeout')
@@ -59,14 +71,23 @@ def validate(plan,base):
     return plan
 
 
+def clock_value(text):
+    match=re.fullmatch(r'(\d{1,2}):([0-5]\d)\s*/\s*(\d{1,2}):([0-5]\d)',str(text))
+    if not match:raise ValueError('Use the exact observed mm:ss/mm:ss playback clock')
+    m,s,tm,ts=map(int,match.groups());current,total=m*60+s,tm*60+ts
+    if not 0<=current<=total<=900 or total==0:raise ValueError('Expected a 1..900 second clip')
+    return current,total
+
+
 class Runner:
-    def __init__(self,session,work,base,*,runtime=None,uid=None,skill=SKILL):
+    def __init__(self,session,work,base,*,runtime=None,uid=None,skill=SKILL,capture_transcriber=None):
         self.session,self.client=session,session.client
         self.work,self.base=Path(work),Path(base)
         self.runtime,self.uid,self.skill=runtime,uid,skill
         self.stop=self.work/'pause.stop'
         self.reads=self.clicks=0
         self.transition_reads=self.rejected_clicks=0
+        self.capture_transcriber=capture_transcriber
 
     def observe(self,wait_ms=0,*,during_wait=False):
         if self.stop.exists():raise Paused('Pause requested; inspect the checkpoint before moving the task')
@@ -89,7 +110,11 @@ class Runner:
         if not all(self.present(item) for item in items):raise BridgeError('Page/question anchor changed')
 
     def click_ref(self,item):
-        ref=self.client.select(item)
+        if 'bounds' in item:
+            matches=[ref for ref,row in self.client.nodes.items() if row.get('bounds')==item['bounds']]
+            if len(matches)!=1:raise BridgeError('Inspected playback control is missing or ambiguous')
+            ref=matches[0]
+        else:ref=self.client.select(item)
         while ref:
             row=self.client.nodes.get(ref,{})
             if row.get('password') or row.get('enabled') is False:raise BridgeError('Disabled or private control')
@@ -139,9 +164,18 @@ class Runner:
             if time.monotonic()>=deadline:raise OutcomeUnknown('Selected state not exposed or not accepted; inspect, do not tap again')
 
     def capture(self,step,directory):
+        playback=None
+        if 'clock' in step:
+            self.observe();self.anchors(step['before'])
+            self.client.select({'text':step['clock']})
+            playback=clock_value(step['clock'])
         directory.mkdir()
         output=directory/'audio'
         stop=output/'capture.stop'
+        asr_stop=output/'transcription.stop';asr=None;transcription={}
+        def transcribe():
+            try:transcription.update(self.capture_transcriber(output/'capture.wav',asr_stop,output/'transcript.jsonl'))
+            except Exception as error:transcription['error']=str(error)
         # Keep verbose events and PCM out of model-facing output.
         with (directory/'capture-process.log').open('wb') as log:
             process=subprocess.Popen([sys.executable,'-X','utf8',str(Path(__file__).with_name('target_audio_capture.py')),
@@ -157,24 +191,48 @@ class Runner:
                     time.sleep(.1)
                 ready=json.loads((output/'ready.json').read_text(encoding='utf-8'))
                 if ready.get('uid')!=self.uid or ready.get('mode')!='capture':raise BridgeError('Unexpected capture identity')
+                if self.capture_transcriber:
+                    asr=threading.Thread(target=transcribe,daemon=True);asr.start()
                 self.click(step)
+                started=time.monotonic();advanced=False
                 deadline=time.monotonic()+step.get('timeout',30)
                 while True:
-                    if self.observe(wait_ms=150,during_wait=True) and self.present(step['expect']):break
+                    if self.observe(wait_ms=150,during_wait=True):
+                        if playback:
+                            self.anchors(step['before'])
+                            timers=[row.get('text','') for row in self.client.nodes.values()
+                                    if re.fullmatch(r'\d{1,2}:[0-5]\d\s*/\s*\d{1,2}:[0-5]\d',str(row.get('text','')))]
+                            if len(timers)!=1:raise BridgeError('Playback clock missing or ambiguous; do not replay')
+                            initial,total=playback;current,observed_total=clock_value(timers[0])
+                            if observed_total!=total:raise BridgeError('Playback clip changed')
+                            advanced=advanced or current>initial
+                            # shortcut: this observed player resets to zero; other end states need live calibration.
+                            if advanced and current==0:
+                                if time.monotonic()-started<total-initial-1:
+                                    raise OutcomeUnknown('Playback reset before the remaining media duration; inspect saved audio')
+                                break
+                        elif self.present(step['expect']):break
                     if process.poll() is not None:raise OutcomeUnknown('Capture ended before the playback postcondition')
                     if time.monotonic()>=deadline:raise OutcomeUnknown('Playback outcome unknown; do not replay')
             finally:
                 # Let the device flush tail PCM and unregister the policy normally.
-                if output.is_dir():stop.touch(exist_ok=True)
-                try:process.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    process.terminate();process.wait(timeout=5)
-                    raise OutcomeUnknown('Capture release unknown; inspect device policy/watchdog')
-                result_path=output/'result.json'
-                if process.returncode or not result_path.is_file():raise BridgeError('Capture process failed; inspect its local log')
-                result=json.loads(result_path.read_text(encoding='utf-8'))
-                if result.get('policy_released') is not True:raise OutcomeUnknown('Capture policy release not confirmed')
-        return {'audio_seconds':result['seconds'],'policy_released':True,'content_verified':False}
+                try:
+                    if output.is_dir():stop.touch(exist_ok=True)
+                    try:process.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        process.terminate();process.wait(timeout=5)
+                        raise OutcomeUnknown('Capture release unknown; inspect device policy/watchdog')
+                    result_path=output/'result.json'
+                    if process.returncode or not result_path.is_file():raise BridgeError('Capture process failed; inspect its local log')
+                    result=json.loads(result_path.read_text(encoding='utf-8'))
+                    if result.get('policy_released') is not True:raise OutcomeUnknown('Capture policy release not confirmed')
+                finally:
+                    if asr:
+                        asr_stop.touch();asr.join(timeout=45)
+                        if sys.exc_info()[0] is None:
+                            if asr.is_alive():raise BridgeError('Audio saved; transcription has not finished; do not replay')
+                            if 'error' in transcription:raise BridgeError('Audio saved; transcription failed: '+transcription['error'])
+        return {'audio_seconds':result['seconds'],'policy_released':True,'content_verified':False,**transcription}
 
     def run(self,plan):
         validate(plan,self.base)

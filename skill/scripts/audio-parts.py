@@ -9,7 +9,6 @@ import time
 import wave
 from pathlib import Path
 import numpy as np
-from faster_whisper import WhisperModel
 
 
 def read_part(path, start, seconds):
@@ -29,6 +28,30 @@ def read_part(path, start, seconds):
     return data
 
 
+def transcribe_parts(model,source,output,*,start=0,seconds=25,overlap=3,watch=False,stop=None,max_seconds=900,on_part=None):
+    if not (start>=0 and 5<=seconds<=90 and 0<=overlap<seconds/2 and 1<=max_seconds<=900):
+        raise ValueError('Invalid interval or deadline')
+    source=Path(source).resolve(strict=True);output=Path(output)
+    stop=Path(stop) if stop else source.with_suffix('.asr-stop')
+    started=time.monotonic();position=start;emitted_end=start
+    with output.open('x',encoding='utf-8') as log:
+        while True:
+            finish=not watch or stop.exists() or time.monotonic()-started>=max_seconds
+            data=read_part(source,position,seconds);duration=len(data)/16000
+            if watch and duration<seconds-.01 and not finish:
+                time.sleep(.5);continue
+            if position+duration<=emitted_end+.1:break
+            segments,_=model.transcribe(data,language='en',beam_size=3,vad_filter=True,condition_on_previous_text=False)
+            row={'start':position,'seconds':duration,'segments':[
+                {'start':position+s.start,'end':position+s.end,'text':s.text} for s in segments]}
+            log.write(json.dumps(row,ensure_ascii=False)+'\n');log.flush()
+            if on_part:on_part(row)
+            emitted_end=position+duration
+            if not watch or (finish and duration<seconds-.01):break
+            position+=seconds-overlap
+    return {'transcript':str(output),'audio_through':emitted_end,'elapsed_seconds':round(time.monotonic()-started,2)}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('wav', type=Path)
@@ -45,32 +68,12 @@ def main():
     source = a.wav.resolve(strict=True)
     output = a.output or source.with_name(f'{source.stem}.parts-{time.time_ns()}.jsonl')
     stop = a.stop_file or source.with_suffix('.asr-stop')
-    started = time.monotonic()
+    from faster_whisper import WhisperModel
     model = WhisperModel('base', device='cpu', compute_type='int8', local_files_only=True)
-    position = a.start
-    emitted_end = a.start
-    with output.open('x', encoding='utf-8') as log:
-        while True:
-            finish = not a.watch or stop.exists() or time.monotonic() - started >= a.max_seconds
-            data = read_part(source, position, a.seconds)
-            duration = len(data) / 16000
-            if a.watch and duration < a.seconds - .01 and not finish:
-                time.sleep(.5)
-                continue
-            if position + duration <= emitted_end + .1:
-                break
-            segments, _ = model.transcribe(data, language='en', beam_size=3, vad_filter=True, condition_on_previous_text=False)
-            row = {'start': position, 'seconds': duration, 'segments': [
-                {'start': position+s.start, 'end': position+s.end, 'text': s.text} for s in segments
-            ]}
-            line = json.dumps(row, ensure_ascii=False)
-            log.write(line + '\n'); log.flush()
-            print(line, flush=True)
-            emitted_end = position + duration
-            if not a.watch or (finish and duration < a.seconds - .01):
-                break
-            position += a.seconds - a.overlap
-    print(json.dumps({'transcript': str(output), 'audio_through': emitted_end, 'elapsed_seconds': round(time.monotonic()-started, 2)}), flush=True)
+    result=transcribe_parts(model,source,output,start=a.start,seconds=a.seconds,overlap=a.overlap,
+                            watch=a.watch,stop=stop,max_seconds=a.max_seconds,
+                            on_part=lambda row:print(json.dumps(row,ensure_ascii=False),flush=True))
+    print(json.dumps(result),flush=True)
 
 
 if __name__ == '__main__':

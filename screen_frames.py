@@ -23,18 +23,43 @@ def check_capture_display(normal,display_id,capture_id):
         raise ValueError('Secondary logical/SurfaceFlinger display mapping is missing or ambiguous')
 
 
+def check_display_visible(normal,client):
+    windows=client.rpc('windows').get('windows',[])
+    focused=[w for w in windows if w.get('display_id')==client.display_id and w.get('focused')]
+    if len(focused)!=1:raise RuntimeError('U-campus is not the focused secondary window')
+    state=normal('shell','dumpsys','activity','activities').decode('utf-8','replace')
+    line=re.search(r'mVisibleWindowsWithDisplayId:\[(.*)',state)
+    screen=re.search(r'Display'+str(client.display_id)+r':\[([^\]]*)\]',line.group(1)) if line else None
+    if not screen or 'cn.unipus.cloud' not in screen.group(1):
+        raise RuntimeError('U-campus is not visible on the secondary display')
+    dump=normal('shell','dumpsys','window','windows').decode('utf-8','replace')
+    visible=False
+    for block in re.split(r'(?=\n\s*Window #\d+ Window\{)',dump):
+        if not re.search(r'(?:mDisplayId|displayId)='+str(client.display_id)+r'\b',block):continue
+        if not all(re.search(r'\b'+key+r'=true\b',block) for key in ('mHasSurface','isOnScreen','isVisible')):continue
+        header=next((row for row in block.splitlines() if re.search(r'Window #\d+ Window\{',row)),'')
+        kind=re.search(r'\bty=([^\s,}]+)',block)
+        if 'cn.unipus.cloud' in header:visible=True
+        elif not kind or kind.group(1) not in {'STATUS_BAR','NAVIGATION_BAR','WALLPAPER'}:
+            raise RuntimeError('Another visible window covers the secondary display')
+    if not visible:raise RuntimeError('U-campus surface is not visible')
+
+
 def display_adb(normal,client,frames=None,capture_id=None):
     if client.display_id<=0 or (frames is not None and frames.display_id!=client.display_id):
         raise ValueError('The control tree and video must identify the same secondary display')
     if capture_id is not None:check_capture_display(normal,client.display_id,capture_id)
     elif frames is None:raise ValueError('An explicit secondary capture is required')
     def command(*args):
+        check_display_visible(normal,client)
         if args==('exec-out','screencap','-p'):
             if capture_id is not None:
                 client.observe(full=True)
                 if client.last['truncated']:raise RuntimeError('Incomplete secondary display; no screenshot read')
-                return normal('exec-out','screencap','-p','-d',str(capture_id))
-            return frames.png(after=time.monotonic())
+                png=normal('exec-out','screencap','-p','-d',str(capture_id))
+            else:png=frames.png(after=time.monotonic())
+            check_display_visible(normal,client)
+            return png
         if len(args)==5 and args[:3]==('shell','input','tap'):
             client.observe(full=True)
             if client.last['truncated']:raise RuntimeError('Incomplete secondary display; no tap sent')

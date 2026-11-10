@@ -129,7 +129,7 @@ def inject_once(session,runtime,wav,uid,output,action):
     """Own one temporary PCM and route, and always restore the caller's controls."""
     wav=Path(wav).resolve(strict=True);pcm=pcm16(wav)
     if type(uid) is not int or uid<10000:raise ValueError('Explicit application UID required')
-    if ':' not in runtime.serial():raise ValueError('Use the authorized wireless connection')
+    runtime.serial()  # Pin the currently authorized USB or wireless device before creating files.
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     local=output/'input.pcm'
     with local.open('xb') as stream:stream.write(pcm)
@@ -184,7 +184,7 @@ def main():
     if args.output.exists():raise ValueError('Use a fresh evidence directory')
     scripts=args.skill.resolve(strict=True)/'scripts';sys.path.insert(0,str(scripts))
     import runtime
-    if ':' not in runtime.serial():raise ValueError('This test must use the authorized hotspot wireless serial')
+    runtime.serial()
     spec=importlib.util.spec_from_file_location('control',scripts/'ucampus-control.py')
     control=importlib.util.module_from_spec(spec);spec.loader.exec_module(control)
     session=Session(control,args.port,args.display_id);dialogue=Dialogue(session)
