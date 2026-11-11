@@ -142,6 +142,10 @@ class TrainingSessionTests(unittest.TestCase):
         module.__file__=str(scripts/'followread.py')
         with patch.dict(os.environ,{'UCAMPUS_WORK':str(self.work)}),patch.object(sys,'path',[str(scripts),*sys.path]):
             exec(compile(source,module.__file__,'exec'),module.__dict__)
+        # runtime may already be imported by another test with a different work directory.
+        module.WORK=module.control.WORK=self.work
+        module.STATE=self.work/'followread-results.json'
+        module.subprocess=types.SimpleNamespace(run=Mock(side_effect=AssertionError('Unexpected external speech process in offline test')))
         module.control.adb=Mock()
         module.control.snapshot=Mock(return_value='failure.png')
         return module
