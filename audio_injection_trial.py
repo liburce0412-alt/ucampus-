@@ -17,15 +17,24 @@ from training_session import Session
 
 REMOTE_PCM='/data/local/tmp/ucampus-audio-input.pcm'
 REMOTE_CLASSPATH='/data/local/tmp/ucampus-audio-probe.jar:/data/local/tmp/ucampus-audio-runtime.jar'
+DEFAULT_MAX_SECONDS=20
+MAX_INJECTION_SECONDS=120
 
 
-def pcm16(wav):
+def duration_limit(max_seconds):
+    if type(max_seconds) is not int or not 1<=max_seconds<=MAX_INJECTION_SECONDS:
+        raise ValueError('Injection max_seconds must be an integer from 1 to 120')
+    return max_seconds
+
+
+def pcm16(wav,max_seconds=DEFAULT_MAX_SECONDS):
+    duration_limit(max_seconds)
     import numpy as np
     with wave.open(str(wav),'rb') as stream:
         rate,channels=stream.getframerate(),stream.getnchannels()
         frames=stream.getnframes()
-        if stream.getsampwidth()!=2 or channels not in (1,2) or not 8000<=rate<=96000 or not 0<frames/rate<=20:
-            raise ValueError('Use a nonempty PCM16 mono/stereo response of at most 20 seconds')
+        if stream.getsampwidth()!=2 or channels not in (1,2) or not 8000<=rate<=96000 or not 0<frames/rate<=max_seconds:
+            raise ValueError(f'Use a nonempty PCM16 mono/stereo response of at most {max_seconds} seconds')
         raw=stream.readframes(frames)
     if len(raw)!=frames*channels*2:raise ValueError('Incomplete source WAV')
     samples=np.frombuffer(raw,dtype='<i2').astype(np.float64).reshape(-1,channels).mean(axis=1)
@@ -35,11 +44,14 @@ def pcm16(wav):
 
 
 class Injector:
-    def __init__(self,adb,serial,uid,log):
+    def __init__(self,adb,serial,uid,log,max_seconds=DEFAULT_MAX_SECONDS):
         if type(uid) is not int or uid<10000:raise ValueError('Explicit application UID required')
+        self.max_seconds=duration_limit(max_seconds)
         self.events=queue.Queue();self.log=log;self.sent=False;self.released=False;self.requires_release=False;self.closed=False
+        # Keep the original two-argument protocol for existing short-clip callers/JARs.
+        duration_args=[] if max_seconds==DEFAULT_MAX_SECONDS else [str(max_seconds)]
         self.process=subprocess.Popen([adb,'-s',serial,'shell','-T','CLASSPATH='+REMOTE_CLASSPATH,
-                                       'app_process','/','local.ucampus.audio.InjectionProbe','inject',str(uid)],
+                                       'app_process','/','local.ucampus.audio.InjectionProbe','inject',str(uid),*duration_args],
                                       stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
                                       creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         self.thread=threading.Thread(target=self.read,daemon=True);self.thread.start()
@@ -68,14 +80,14 @@ class Injector:
         if self.sent:raise RuntimeError('Never replay this injection automatically')
         self.sent=True
         self.process.stdin.write(b'P');self.process.stdin.flush()
-        self.wait('played',23)
+        self.wait('played',self.max_seconds+3)
 
     def close(self):
         if self.closed:return
         if self.process.poll() is None:
             try:self.process.stdin.write(b'X');self.process.stdin.flush();self.process.stdin.close()
             except (BrokenPipeError,OSError):pass
-        try:self.process.wait(timeout=48)
+        try:self.process.wait(timeout=self.max_seconds+28)
         except subprocess.TimeoutExpired:
             self.process.terminate()
             raise RuntimeError('Device watchdog outcome unknown; inspect target policy before continuing')
@@ -93,14 +105,20 @@ def word_ready(session,word):
 
 
 def word_turn(session,wav,word,x,y):
+    return {'word':word,**tap_turn(session,wav,x,y,lambda:word_ready(session,word))}
+
+
+def tap_turn(session,wav,x,y,guard):
+    """Reuse the calibrated tap recorder with the caller's exact current-stage guard."""
+    if not callable(guard):raise ValueError('A current-page guard is required before recording')
+    guard()
     control=session.control
-    word_ready(session,word)
     png=control.adb('exec-out','screencap','-p');control.assert_recording_profile(png)
     from PIL import Image
     import io
     if Image.open(io.BytesIO(png)).size!=(1440,3200) or not (100<x<1340 and 600<y<2900):
-        raise ValueError('Word recording needs the inspected 1440x3200 layout and explicit coordinates')
-    result={'word':word,'before':control.snapshot('injection-word-before',png)}
+        raise ValueError('Tap recording needs the inspected 1440x3200 layout and explicit coordinates')
+    result={'before':control.snapshot('injection-tap-before',png)}
     started=time.monotonic();recording=False
     try:
         control.adb('shell','input','tap',str(x),str(y))
@@ -109,10 +127,10 @@ def word_turn(session,wav,word,x,y):
             png=control.adb('exec-out','screencap','-p')
             if control.recording_at(png,x,y):
                 recording=True
-                result['recording_ready']=control.snapshot('injection-word-recording',png)
+                result['recording_ready']=control.snapshot('injection-tap-recording',png)
                 break
             time.sleep(.15)
-        else:raise RuntimeError('Word microphone did not enter recording; no audio played')
+        else:raise RuntimeError('Microphone did not enter recording; no audio played')
         control.play_audio(wav)
         time.sleep(.2)
     finally:
@@ -121,13 +139,27 @@ def word_turn(session,wav,word,x,y):
             png=control.adb('exec-out','screencap','-p')
             if control.recording_at(png,x,y):control.adb('shell','input','tap',str(x),str(y))
     result.update(elapsed_seconds=round(time.monotonic()-started,3),
-                  screenshot=control.snapshot('injection-word-after'),platform_acceptance='pending_app_readback')
+                  screenshot=control.snapshot('injection-tap-after'),platform_acceptance='pending_app_readback')
     return result
 
 
-def inject_once(session,runtime,wav,uid,output,action):
+def injection_ready(row,uid,pcm_bytes,max_seconds):
+    if row.get('uid')!=uid or row.get('mode')!='inject':raise RuntimeError('Unexpected route UID or mode')
+    expected={'max_seconds':max_seconds,'pcm_bytes':pcm_bytes,'duration_ms':(pcm_bytes*1000+31999)//32000,
+              'rate':16000,'channels':1}
+    fields=set(expected)|{'max_supported_seconds'}
+    if not fields.intersection(row) and max_seconds==DEFAULT_MAX_SECONDS and 0<pcm_bytes<=32000*DEFAULT_MAX_SECONDS:
+        return  # Legacy probe still enforces the original 20-second PCM bound.
+    supported=row.get('max_supported_seconds')
+    if (type(supported) is not int or not max_seconds<=supported<=MAX_INJECTION_SECONDS
+            or any(type(row.get(key)) is not int or row[key]!=value for key,value in expected.items())):
+        raise RuntimeError('Audio probe duration capability or PCM length differs; update/check the probe before recording')
+
+
+def inject_once(session,runtime,wav,uid,output,action,max_seconds=DEFAULT_MAX_SECONDS):
     """Own one temporary PCM and route, and always restore the caller's controls."""
-    wav=Path(wav).resolve(strict=True);pcm=pcm16(wav)
+    duration_limit(max_seconds)
+    wav=Path(wav).resolve(strict=True);pcm=pcm16(wav,max_seconds)
     if type(uid) is not int or uid<10000:raise ValueError('Explicit application UID required')
     runtime.serial()  # Pin the currently authorized USB or wireless device before creating files.
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
@@ -138,14 +170,16 @@ def inject_once(session,runtime,wav,uid,output,action):
     if status!=1:raise RuntimeError('Could not check the temporary PCM path')
     control=session.control
     normal_adb,normal_play,normal_check=control.adb,control.play_audio,session.check_audio
+    had_release=hasattr(control,'release_audio');normal_release=getattr(control,'release_audio',None)
     try:
         # The exact path was absent; also remove a partial upload if push fails.
         runtime.adb('push',str(local),REMOTE_PCM)
         with (output/'injection.jsonl').open('x',encoding='utf-8') as log:
-            injector=Injector(runtime.adb_path(),runtime.serial(),uid,log)
+            injector=Injector(runtime.adb_path(),runtime.serial(),uid,log,max_seconds)
             try:
-                if injector.wait('ready',12).get('uid')!=uid:raise RuntimeError('Unexpected route UID')
+                injection_ready(injector.wait('ready',12),uid,len(pcm),max_seconds)
                 control.play_audio=injector.play
+                control.release_audio=injector.close
                 def check_prepared(path):
                     if Path(path).resolve()!=wav:raise ValueError('Unexpected speech file')
                 session.check_audio=check_prepared
@@ -155,11 +189,19 @@ def inject_once(session,runtime,wav,uid,output,action):
                     return value
                 control.adb=input_and_release
                 result=action()
-            finally:injector.close()
-        return {**result,'source':str(wav),'digital_pcm_bytes':len(pcm),'policy_released':True,
+            finally:
+                failure=sys.exception()
+                try:injector.close()
+                except Exception as cleanup_error:
+                    if failure is None:raise
+                    failure.add_note('Audio cleanup also failed: '+str(cleanup_error))
+        return {**result,'source':str(wav),'digital_pcm_bytes':len(pcm),'digital_audio_seconds':len(pcm)/32000,
+                'max_seconds':max_seconds,'policy_released':True,
                 'speaker_playback':False,'audio_content_verified':False}
     finally:
         control.adb,control.play_audio,session.check_audio=normal_adb,normal_play,normal_check
+        if had_release:control.release_audio=normal_release
+        elif hasattr(control,'release_audio'):del control.release_audio
         runtime.adb('shell','rm','-f',REMOTE_PCM)
 
 
@@ -167,6 +209,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('wav',type=Path)
     parser.add_argument('--uid',type=int,required=True)
+    parser.add_argument('--max-seconds',type=int,default=DEFAULT_MAX_SECONDS,
+                        help='Explicit PCM duration bound, 1..120 seconds (default: 20)')
     parser.add_argument('--port',type=int,default=8794)
     parser.add_argument('--skill',type=Path,default=SKILL)
     parser.add_argument('--output',type=Path,required=True)
@@ -180,14 +224,14 @@ def main():
     if (not 0<=args.display_id<=2147483647 or (args.capture_display_id is not None and not args.display_id)
             or (args.display_id and not (args.word and (args.scrcpy or args.capture_display_id is not None)))):
         parser.error('Secondary injection requires an inspected Pre word and explicit capture; dialogue is calibrated only on display 0')
-    wav=args.wav.resolve(strict=True);pcm16(wav)
+    wav=args.wav.resolve(strict=True);pcm16(wav,args.max_seconds)
     if args.output.exists():raise ValueError('Use a fresh evidence directory')
     scripts=args.skill.resolve(strict=True)/'scripts';sys.path.insert(0,str(scripts))
     import runtime
     runtime.serial()
     spec=importlib.util.spec_from_file_location('control',scripts/'ucampus-control.py')
     control=importlib.util.module_from_spec(spec);spec.loader.exec_module(control)
-    session=Session(control,args.port,args.display_id);dialogue=Dialogue(session)
+    session=Session(control,args.port,args.display_id);dialogue=None if args.word else Dialogue(session)
     raw_adb=control.adb
     frames=None;result={'display_id':args.display_id}
     args.output.mkdir(parents=True)
@@ -207,7 +251,7 @@ def main():
             dialogue.wait_audio_ready(current,target,reply)
         control.assert_recording_profile(control.adb('exec-out','screencap','-p'))
         action=(lambda:word_turn(session,wav,args.word,*args.xy)) if args.word else (lambda:dialogue.turn(wav,current,target))
-        result.update(inject_once(session,runtime,wav,args.uid,args.output,action))
+        result.update(inject_once(session,runtime,wav,args.uid,args.output,action,max_seconds=args.max_seconds))
     except Exception as error:
         result.update(error=str(error),next='Inspect current recording/progress; do not resend automatically')
         raise

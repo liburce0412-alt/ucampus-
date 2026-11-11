@@ -10,6 +10,9 @@ captures/
 recordings/
 bridge/build/
 audio-injection/build/
+scrcpy-private/source/
+scrcpy-private/build/
+scrcpy-private/scrcpy-server-v5.0.1-private
 *.apk
 *.idsig
 *.jar

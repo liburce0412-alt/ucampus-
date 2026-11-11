@@ -65,6 +65,7 @@ def settled_ui(bridge, text):
     while time.monotonic() < deadline:
         node = target(root, text)
         current = bounds(node) if node is not None else None
+        if current is None:return root,parents
         if current == previous and current is not None:
             return root, parents
         previous = current
@@ -75,23 +76,44 @@ def settled_ui(bridge, text):
 
 def wait_expanded(bridge, text):
     deadline = time.monotonic() + 4
+    scrolled = False
+    previous = None
     while True:
         root, parents = ui(bridge)
         label = expanded(root, parents, text)
         if label is not None:
-            return root, parents, label
+            position = bounds(label)
+            if not bridge or position == previous:
+                return root, parents, label
+            previous = position
+        else:
+            previous = None
+        node = target(root, text)
+        if label is None and bridge and not scrolled and node is not None and bounds(node)[3] > 2400:
+            # The last card may expand below the viewport; scroll it once without repeating the click.
+            control.adb("shell", "input", "swipe", "1150", "2400", "1150", "1300", "400")
+            scrolled = True
+            continue
         if time.monotonic() >= deadline:
             evidence = control.snapshot("sentence-expand-error")
             raise RuntimeError(f"Sentence was not expanded as expected; no tap retried. Inspect {evidence}")
         time.sleep(0.15)
 
 
-def run(bridge=None, start_at=1):
+def run(bridge=None, start_at=1, sentences=None):
     # Keep the initial complete inventory: the bridge contains only visible nodes.
-    root, parents = ui()
-    if target(root, "跟读以下句子。") is None:
+    display_id=getattr(getattr(bridge,'client',None),'display_id',0)
+    if isinstance(display_id,int) and display_id>0 and sentences is None:
+        raise ValueError('Secondary followread requires the inspected complete sentence list')
+    if sentences is not None and (not isinstance(sentences,list) or not sentences
+            or any(not isinstance(text,str) or not re.fullmatch(r"[A-Za-z].*[.!?][\"'”’]?",text) for text in sentences)
+            or len(set(sentences))!=len(sentences)):
+        raise ValueError('Use a complete list of distinct inspected English sentences')
+    root, parents = ui(bridge) if sentences is not None else ui()
+    if sentences is None and target(root, "跟读以下句子。") is None:
         raise RuntimeError("Expected sentence repetition step; stopped.")
-    sentences = [n.get("text") for n in root.iter() if re.fullmatch(r"[A-Za-z].*[.!?][\"'”’]?", n.get("text", ""))]
+    if sentences is None:
+        sentences = [n.get("text") for n in root.iter() if re.fullmatch(r"[A-Za-z].*[.!?][\"'”’]?", n.get("text", ""))]
     if not sentences:
         raise RuntimeError("No sentences found.")
     if type(start_at) is not int or not 1 <= start_at <= len(sentences):
@@ -102,7 +124,7 @@ def run(bridge=None, start_at=1):
         if index < start_at:
             continue
         node = target(root, text)
-        existing = score(node, parents)
+        existing = None if FAST else score(node, parents)
         if existing and existing > 0:
             entry = results.get(text, {})
             entry.update({"index": index, "score": existing, "observed_existing": True})
@@ -118,8 +140,11 @@ def run(bridge=None, start_at=1):
         for attempt in range(12):
             node = target(root, text)
             b = bounds(node) if node is not None else [0, 0, 0, 0]
-            if b[0] < b[2] and 700 < (b[1]+b[3])/2 < 2400:
-                break
+            # The final collapsed row cannot always scroll above 2400; its full text still fits below 3000.
+            if b[0] < b[2] and 700 < (b[1]+b[3])/2 and b[3] <= 3000:
+                root,parents=settled_ui(bridge,text)
+                node=target(root,text);b=bounds(node) if node is not None else [0,0,0,0]
+                if b[0]<b[2] and 700<(b[1]+b[3])/2 and b[3]<=3000:break
             # Current run traverses the list from top to bottom.
             control.adb("shell", "input", "swipe", "1150", "2400", "1150", "1300", "400")
             root, parents = settled_ui(bridge, text)
@@ -127,11 +152,12 @@ def run(bridge=None, start_at=1):
             raise RuntimeError(f"Sentence {index} not visible after bounded scrolling.")
         label = expanded(root, parents, text)
         if label is None:
-            control.adb("shell", "input", "tap", str((b[0]+b[2])//2), str((b[1]+b[3])//2))
+            if bridge:bridge.open_sentence(text)
+            else:control.adb("shell", "input", "tap", str((b[0]+b[2])//2), str((b[1]+b[3])//2))
             root, parents, label = wait_expanded(bridge, text)
         b = bounds(label)
         x, y = (b[0]+b[2])//2, (b[1]+b[3])//2 - 187
-        if not (600 < y < 2500):
+        if not (600 < y < 2900 and 0 <= b[0] < b[2] <= 1440 and b[1] < b[3] <= 3000):
             raise RuntimeError("Recording button outside verified viewport; stopped.")
         started = time.monotonic()
         if bridge:
@@ -147,6 +173,7 @@ def run(bridge=None, start_at=1):
                 break
             time.sleep(1)
         result = {"index": index, "score": obtained, "elapsed_seconds": round(time.monotonic()-started, 2), "screenshot": action.get("screenshot") or control.snapshot(f"sentence-{index:02}-result"), "audio": str(wav), "recording_was_active_at_audio_end": action.get("still_recording_after_playback")}
+        result.update({key: action[key] for key in ("platform_acceptance", "digital_audio_seconds", "digital_pcm_bytes", "policy_released", "speaker_playback") if key in action})
         results[text] = result
         STATE.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps({k: result[k] for k in ("index", "elapsed_seconds")} if FAST else result, ensure_ascii=False), flush=True)

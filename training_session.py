@@ -57,13 +57,17 @@ class Session:
         self.expected_text = None
 
     def read_xml(self):
-        self.client.observe()
+        self.observe()
         if self.client.last['truncated']:
             raise BridgeError('Incomplete control tree; inspect with the original tool')
         return xml_tree(self.client.nodes)
 
+    def observe(self,wait_ms=0):
+        if self.client.display_id:self.client.observe_visible(wait_ms=wait_ms)
+        else:self.client.observe(wait_ms=wait_ms)
+
     def state(self, wait_ms=0):
-        self.client.observe(wait_ms=wait_ms)
+        self.observe(wait_ms)
         if self.client.last['truncated']:
             raise BridgeError('Incomplete recording state')
         texts = {row.get('text') or row.get('description', '') for row in self.client.nodes.values()}
@@ -91,6 +95,11 @@ class Session:
             sd.check_output_settings(device=self.control.audio_device('OUTPUT'),
                                      channels=stream.getnchannels(), samplerate=stream.getframerate(), dtype='int16')
 
+    def open_sentence(self,text):
+        from workflow_session import Runner
+        Runner(self,self.control.WORK,self.control.WORK).click({
+            'action':'click','before':[{'text':'范例学习'},{'text':text}],'target':{'text':text}})
+
     def speak_turn(self, wav, x, y, expected_text):
         """Wait on live text; retain pixel calibration for the self-drawn microphone."""
         from PIL import Image
@@ -107,7 +116,8 @@ class Session:
         if not any(key.startswith(parent) and item.get('text') == expected_text for key, item in nodes.items()):
             raise BridgeError('The expanded sentence changed; no recording was started')
         left, top, right, bottom = row['bounds']
-        if (x, y) != ((left + right)//2, (top + bottom)//2 - 187) or not 600 < y < 2500:
+        if ((x, y) != ((left + right)//2, (top + bottom)//2 - 187)
+                or not (600 < y < 2900 and 0 <= left < right <= 1440 and top < bottom <= 3000)):
             raise BridgeError('Recording coordinates do not match the calibrated label')
         png = self.control.adb('exec-out', 'screencap', '-p')
         self.control.assert_recording_profile(png)
@@ -134,7 +144,11 @@ class Session:
                 self.control.adb('shell', 'input', 'tap', *map(str, xy))
             elif phase not in ('submitted', 'retry_available'):
                 raise BridgeError('Unexpected state after speech; inspect before retrying')
-            # Submission text can precede both interactivity and persistence of the recording.
+            release=getattr(self.control,'release_audio',None)
+            if release is not None:
+                self.wait_phase({'submitted','retry_available'},12,events)
+                release()
+            # Switching sentences during submission can discard the recording; wait for saved interaction, not a score.
             result['final_state'] = self.wait_phase({'retry_available'}, 30, events)
             result['platform_acceptance'] = 'pending_stage_check'
             result['screenshot'] = self.control.snapshot('speak-turn')
@@ -154,24 +168,52 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=8794)
     parser.add_argument('--skill', type=Path, default=SKILL)
+    parser.add_argument('--display-id',type=int,default=0)
+    parser.add_argument('--capture-display-id',type=int)
+    parser.add_argument('--uid',type=int,help='Use the inspected U-campus UID for digital input')
     sub = parser.add_subparsers(dest='command', required=True)
     follow = sub.add_parser('followread')
     follow.add_argument('--start-at', type=int, default=1)
+    follow.add_argument('--sentences',type=Path,help='Reviewed complete English sentence JSON array')
     record = sub.add_parser('speak-turn')
     record.add_argument('wav', type=Path)
     record.add_argument('x', type=int)
     record.add_argument('y', type=int)
     record.add_argument('--text', required=True)
     args = parser.parse_args()
+    if args.display_id<0 or (args.uid is not None and args.uid<10000):parser.error('Invalid inspected display or application UID')
+    if args.display_id and (args.capture_display_id is None or args.uid is None):
+        parser.error('Secondary speaking requires an explicit capture display and UID audio route')
+    from freeze_runtime import verify
+    verify(Path(__file__).resolve().parent)
     scripts = args.skill.resolve(strict=True)/'scripts'
     sys.path.insert(0, str(scripts))
     spec = importlib.util.spec_from_file_location('followread', scripts/'followread.py')
     followread = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(followread)
-    session = Session(followread.control, args.port)
+    session = Session(followread.control, args.port,args.display_id)
     try:
+        if args.display_id:
+            from screen_frames import display_adb
+            followread.control.adb=display_adb(followread.control.adb,session.client,capture_id=args.capture_display_id)
+        if args.uid is not None:
+            import runtime
+            from audio_injection_trial import inject_once
+            original=session.speak_turn
+            def digital_turn(wav,x,y,text):
+                def record():
+                    record_x,record_y=x,y
+                    if args.command=='followread':
+                        _,_,label=followread.wait_expanded(session,text)
+                        left,top,right,bottom=followread.bounds(label)
+                        record_x,record_y=(left+right)//2,(top+bottom)//2-187
+                    return original(wav,record_x,record_y,text)
+                return inject_once(session,runtime,wav,args.uid,followread.control.WORK/f'injection-{time.time_ns()}',
+                                   record)
+            session.speak_turn=digital_turn
         if args.command == 'followread':
-            followread.run(bridge=session, start_at=args.start_at)
+            sentences=json.loads(args.sentences.read_text(encoding='utf-8')) if args.sentences else None
+            followread.run(bridge=session,start_at=args.start_at,sentences=sentences)
         else:
             print(json.dumps(session.speak_turn(args.wav,args.x,args.y,args.text),ensure_ascii=False))
     finally:

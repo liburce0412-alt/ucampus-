@@ -45,5 +45,29 @@ class SecondaryWordTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):command('shell','input','tap','720','2320')
         normal.assert_not_called()
 
+    def test_scroll_and_owned_hold_stay_on_secondary_and_release_after_read_failure(self):
+        normal=Mock();client=SimpleNamespace(display_id=7,observe=Mock(),last={'truncated':False})
+        command=display_adb(normal,client,SimpleNamespace(display_id=7))
+        command('shell','input','swipe','1150','2400','1150','1300','400')
+        normal.assert_called_with('shell','input','-d','7','swipe','1150','2400','1150','1300','400')
+        command('shell','input','motionevent','DOWN','720','2970')
+        self.visible.side_effect=RuntimeError('window disappeared')
+        command('shell','input','motionevent','UP','720','2970')
+        normal.assert_called_with('shell','input','-d','7','motionevent','UP','720','2970')
+        count=normal.call_count
+        command('shell','input','motionevent','UP','720','2970')
+        self.assertEqual(normal.call_count,count)
+
+    def test_rejected_or_unknown_down_never_routes_release_to_main(self):
+        normal=Mock(side_effect=TimeoutError('unknown dispatch'))
+        client=SimpleNamespace(display_id=7,observe=Mock(),last={'truncated':False})
+        command=display_adb(normal,client,SimpleNamespace(display_id=7))
+        with self.assertRaises(TimeoutError):command('shell','input','motionevent','DOWN','720','2970')
+        normal.side_effect=None
+        with self.assertRaises(ValueError):command('shell','input','motionevent','UP','721','2970')
+        command('shell','input','motionevent','UP','720','2970')
+        for call in normal.call_args_list:self.assertEqual(call.args[2:4],('-d','7'))
+        with self.assertRaises(ValueError):command('shell','input','swipe','0','0','2000','1000','400')
+
 
 if __name__=='__main__':unittest.main()

@@ -36,12 +36,14 @@ python bridge_client.py --port 8794 displays
 使用自行取得的 scrcpy 5.0.1，在当前任务的安全边界开启独立显示：
 
 ```powershell
-& '<scrcpy.exe>' -s $env:UCAMPUS_SERIAL --new-display=1440x3200 --no-vd-destroy-content --display-ime-policy=local --start-app=cn.unipus.cloud --no-audio
+& '<scrcpy.exe>' -s $env:UCAMPUS_SERIAL --new-display=1440x3200/600 --no-vd-destroy-content --display-ime-policy=local --start-app=cn.unipus.cloud --no-audio
 python bridge_client.py --port 8794 displays
 & $env:UCAMPUS_ADB -s $env:UCAMPUS_SERIAL shell dumpsys SurfaceFlinger --display-id
 ```
 
-保留 scrcpy 窗口即可在电脑查看进度。控制使用逻辑 display ID，原生截图使用 SurfaceFlinger 64 位 ID；两者通常不同。`workflow_session.py --display-id N --capture-display-id ID` 的短词路径只接受唯一的 scrcpy 虚拟屏映射，多个副屏或过期 ID 会停止。
+示例固定本次口语实测的 1440×3200、600 dpi；相同像素但不同密度仍可能改变布局，不能直接复用坐标。保留 scrcpy 窗口即可在电脑查看进度。控制使用逻辑 display ID，原生截图使用 SurfaceFlinger 64 位 ID；两者通常不同。`workflow_session.py --display-id N --capture-display-id ID` 的短词路径只接受唯一的 scrcpy 虚拟屏映射，多个副屏或过期 ID 会停止。
+
+主屏视频应用可能自动向标准 scrcpy 副屏投放 Presentation。需要隔离时使用[训练专用副屏补丁](../scrcpy-private/README.md)，仅替换新子进程的 server。不要关闭用户视频应用来解决，也不要放宽外来窗口保护。当前窗口以无障碍焦点和 WindowManager 可见表面核对，迁移后的厂商活动缓存可能过期。
 
 想在手机前台看：先创建计划的 `pause.stop`，等进程退出并确认音频已释放，再打开 U校园。它会迁移同一个任务，不能在手机操作时让执行器继续点击旧副屏。移回后重新枚举屏幕和核对题号，再执行剩余步骤。
 
@@ -60,7 +62,7 @@ python bridge_client.py --port 8794 displays
 
 最后一行替换 UID 后才运行。探针再次检查 UID 属于当前用户且只对应 U校园，拒绝目标已在录音时改路由。`check` 短暂注册并释放策略，不开始训练。正常退出必须看到 `released` 且 `policy_status=1`。
 
-首次用可重播短词确认实际内容，之后才播放长听力。直送仅支持 PCM16、单/双声道、最长 20 秒，内部转为 16 kHz 单声道；单次播放不能自动重放。采音上限 900 秒，带设备端超时保护。
+首次用可重播短词确认实际内容，之后才播放长听力。直送支持 PCM16、单/双声道，内部转为 16 kHz 单声道；默认仍为 20 秒，显式 `max_seconds` 可设 1–120 秒。超过旧默认值之前，先在无音频活动的安全边界更新自己拥有的探针，并核对 ready 中的版本能力、UID、PCM 长度和实际时长；旧探针仅兼容原 20 秒路径。手机与电脑的截止时间一起按上限调整，单次播放不能自动重放。采音上限 900 秒，带设备端超时保护。口语整组命令见[口语执行](SPEAKING.md)。
 
 ```powershell
 python target_audio_capture.py --uid '<UID>' --seconds 240 --output work/capture-001

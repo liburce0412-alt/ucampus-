@@ -1,0 +1,14 @@
+diff --git a/server/src/main/java/com/genymobile/scrcpy/video/NewDisplayCapture.java b/server/src/main/java/com/genymobile/scrcpy/video/NewDisplayCapture.java
+index 5ed4c73..f4fab50 100644
+--- a/server/src/main/java/com/genymobile/scrcpy/video/NewDisplayCapture.java
++++ b/server/src/main/java/com/genymobile/scrcpy/video/NewDisplayCapture.java
+@@ -211,8 +211,6 @@ public class NewDisplayCapture extends SurfaceCapture {
+     public void startNew(Surface surface) {
+         try {
+-            int flags = VIRTUAL_DISPLAY_FLAG_PUBLIC
+-                    | VIRTUAL_DISPLAY_FLAG_PRESENTATION
+-                    | VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
++            int flags = VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
+                     | VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
+                     | VIRTUAL_DISPLAY_FLAG_ROTATES_WITH_CONTENT;
+             if (vdDestroyContent) {

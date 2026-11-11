@@ -2,6 +2,7 @@
 
 - [Mika](https://github.com/wangzan101/Mika)：参考手机操作的速度与便利性、连接/画面复用、状态驱动批处理思路。本仓库不含 Mika 源码副本，也不添加手机模型代理。
 - [scrcpy 5.0.1](https://github.com/Genymobile/scrcpy/tree/v5.0.1)：用户自行提供官方程序/server。视频连接复用其协议；音频探针通过反射复用其 shell Context 初始化类。未随仓库分发其二进制。上游采用 Apache-2.0，分发上游文件时须保留相应许可与声明。
+- `scrcpy-private/` 提供针对上述固定版本的最小显示标志补丁与本地构建脚本；补丁上下文来自上游，保留 [Apache-2.0 许可](scrcpy-private/LICENSE)。构建与私有副屏实测范围见该目录说明，不包含上游源码树或生成的 server。
 - U校园 APK 由使用者合法取得并仅供本地分析；本仓库不含安装包、反编译源码、资源数据库、媒体或课程内容。
 - Python 包和 Android SDK/JDK 使用各自许可，依赖通过标准安装工具获取。
 

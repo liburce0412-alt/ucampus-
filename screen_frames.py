@@ -9,6 +9,7 @@ import socket
 import subprocess
 import threading
 import time
+from bridge_client import BridgeError
 
 
 def check_capture_display(normal,display_id,capture_id):
@@ -24,14 +25,15 @@ def check_capture_display(normal,display_id,capture_id):
 
 
 def check_display_visible(normal,client):
-    windows=client.rpc('windows').get('windows',[])
+    for attempt in range(2):
+        try:
+            windows=client.rpc('windows').get('windows',[])
+            break
+        except BridgeError as error:
+            if attempt or type(error) is not BridgeError or not str(error).startswith('Bridge connection failed;'):raise
     focused=[w for w in windows if w.get('display_id')==client.display_id and w.get('focused')]
     if len(focused)!=1:raise RuntimeError('U-campus is not the focused secondary window')
-    state=normal('shell','dumpsys','activity','activities').decode('utf-8','replace')
-    line=re.search(r'mVisibleWindowsWithDisplayId:\[(.*)',state)
-    screen=re.search(r'Display'+str(client.display_id)+r':\[([^\]]*)\]',line.group(1)) if line else None
-    if not screen or 'cn.unipus.cloud' not in screen.group(1):
-        raise RuntimeError('U-campus is not visible on the secondary display')
+    # Vendor activity visibility caches may retain the old display after task migration.
     dump=normal('shell','dumpsys','window','windows').decode('utf-8','replace')
     visible=False
     for block in re.split(r'(?=\n\s*Window #\d+ Window\{)',dump):
@@ -50,7 +52,15 @@ def display_adb(normal,client,frames=None,capture_id=None):
         raise ValueError('The control tree and video must identify the same secondary display')
     if capture_id is not None:check_capture_display(normal,client.display_id,capture_id)
     elif frames is None:raise ValueError('An explicit secondary capture is required')
+    held=None
     def command(*args):
+        nonlocal held
+        if len(args)==6 and args[:4]==('shell','input','motionevent','UP'):
+            if held is None:return b''
+            if args[4:]!=held:raise ValueError('Release must match this display adapter\'s held pointer')
+            # Release our own pointer even if the app disappeared or the bridge failed during the hold.
+            result=normal('shell','input','-d',str(client.display_id),*args[2:]);held=None
+            return result
         check_display_visible(normal,client)
         if args==('exec-out','screencap','-p'):
             if capture_id is not None:
@@ -60,11 +70,23 @@ def display_adb(normal,client,frames=None,capture_id=None):
             else:png=frames.png(after=time.monotonic())
             check_display_visible(normal,client)
             return png
-        if len(args)==5 and args[:3]==('shell','input','tap'):
+        tap=len(args)==5 and args[:3]==('shell','input','tap')
+        swipe=len(args)==8 and args[:3]==('shell','input','swipe')
+        down=len(args)==6 and args[:4]==('shell','input','motionevent','DOWN')
+        if tap or swipe or down:
+            if held is not None:raise ValueError('Release the current secondary pointer before more input')
+            xy=args[4:] if down else args[3:7] if swipe else args[3:]
+            try:values=tuple(int(value) for value in xy)
+            except (ValueError,TypeError):raise ValueError('Expected inspected integer input coordinates')
+            if any(not 0<=value<(1440 if index%2==0 else 3200) for index,value in enumerate(values)):
+                raise ValueError('Input is outside the calibrated 1440x3200 display')
+            if swipe and not 50<=int(args[7])<=1000:raise ValueError('Use a bounded 50..1000 ms scroll')
             client.observe(full=True)
-            if client.last['truncated']:raise RuntimeError('Incomplete secondary display; no tap sent')
+            if client.last['truncated']:raise RuntimeError('Incomplete secondary display; no input sent')
+            if down:held=args[4:]
             return normal('shell','input','-d',str(client.display_id),*args[2:])
-        raise ValueError('Secondary word probe permits only explicit-display screenshots and taps')
+        raise ValueError('Only explicit-display screenshots, taps, bounded scrolls and owned holds are allowed')
+    command.check_visible=lambda:check_display_visible(normal,client)
     return command
 
 

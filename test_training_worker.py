@@ -114,15 +114,35 @@ class WorkerTests(unittest.TestCase):
 
 
 class VisibilityTests(unittest.TestCase):
+    def test_window_guard_reconnects_once_for_read_only_failure(self):
+        error=BridgeError('Bridge connection failed; service and ADB forward must already be ready.')
+        client=SimpleNamespace(display_id=7,rpc=Mock(side_effect=[error,{'windows':[{'display_id':7,'focused':True}]}]))
+        normal=Mock(return_value=b'\n Window #1 Window{abc cn.unipus.cloud/Main}:\n mDisplayId=7 mHasSurface=true isOnScreen=true isVisible=true ty=BASE_APPLICATION\n')
+        check_display_visible(normal,client)
+        self.assertEqual([call.args for call in client.rpc.call_args_list],[('windows',),('windows',)])
+        for failure,count in ((error,2),(BridgeError('device_locked'),1)):
+            client.rpc=Mock(side_effect=failure)
+            with self.assertRaises(BridgeError):check_display_visible(normal,client)
+            self.assertEqual(client.rpc.call_count,count)
+
     def test_main_screen_activity_does_not_require_secondary_active_flag(self):
         client=SimpleNamespace(display_id=7,rpc=Mock(return_value={'windows':[{'display_id':7,'focused':True,'active':False}]}))
-        activity=b'mVisibleWindowsWithDisplayId:[Display7:[cn.unipus.cloud/Main]]'
         window=b'\n Window #1 Window{abc cn.unipus.cloud/Main}:\n mDisplayId=7 mHasSurface=true isOnScreen=true isVisible=true ty=BASE_APPLICATION\n'
-        normal=Mock(side_effect=[activity,window])
+        normal=Mock(return_value=window)
         check_display_visible(normal,client)
+        normal.assert_called_once_with('shell','dumpsys','window','windows')
         other=b'\n Window #2 Window{xyz other.app/Main}:\n mDisplayId=7 mHasSurface=true isOnScreen=true isVisible=true ty=APPLICATION\n'
-        normal.side_effect=[activity,window+other]
+        normal.return_value=window+other
         with self.assertRaisesRegex(RuntimeError,'covers'):check_display_visible(normal,client)
+
+    def test_private_display_still_rejects_presentations_and_missing_surfaces(self):
+        client=SimpleNamespace(display_id=25,rpc=Mock(return_value={'windows':[{'display_id':25,'focused':True}]}))
+        target=b'\n Window #1 Window{abc cn.unipus.cloud/Main}:\n mDisplayId=25 mHasSurface=true isOnScreen=true isVisible=true ty=BASE_APPLICATION\n'
+        normal=Mock(return_value=target);check_display_visible(normal,client)
+        normal.return_value=target+b'\n Window #2 Window{xyz other.app/Presentation}:\n mDisplayId=25 mHasSurface=true isOnScreen=true isVisible=true ty=PRESENTATION\n'
+        with self.assertRaisesRegex(RuntimeError,'covers'):check_display_visible(normal,client)
+        normal.return_value=target.replace(b'isVisible=true',b'isVisible=false')
+        with self.assertRaisesRegex(RuntimeError,'surface is not visible'):check_display_visible(normal,client)
 
 
 if __name__=='__main__':unittest.main()

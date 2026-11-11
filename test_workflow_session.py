@@ -47,6 +47,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(report['status'],'complete');self.assertEqual(len(report['steps']),2)
         self.assertNotIn('nodes',report)
 
+    def test_secondary_semantic_click_checks_occlusion_before_dispatch(self):
+        self.client.display_id=7
+        guard=Mock(side_effect=RuntimeError('another window covers the display'))
+        self.session.control=types.SimpleNamespace(adb=types.SimpleNamespace(check_visible=guard))
+        with self.assertRaisesRegex(RuntimeError,'covers'):self.runner.click(self.plan()['steps'][0])
+        guard.assert_called_once();self.client.click.assert_not_called()
+        self.session.control.adb=object()
+        with self.assertRaisesRegex(BridgeError,'visibility guard'):self.runner.click(self.plan()['steps'][0])
+        self.client.click.assert_not_called()
+
     def test_lost_click_response_stops_without_replaying_or_marking_complete(self):
         self.client.click.side_effect=OutcomeUnknown('Lost response')
         with self.assertRaises(OutcomeUnknown):self.runner.run(self.plan())

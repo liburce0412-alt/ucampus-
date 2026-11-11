@@ -19,6 +19,21 @@ def state(ident, nodes):
 
 
 class PreparedControlTests(unittest.TestCase):
+    def test_visible_wait_retries_only_transient_reads_and_never_input(self):
+        c=Client(8794,display_id=7);c.click=Mock();c.last={'snapshot_id':'old'}
+        c.observe=Mock(side_effect=[BridgeError('target_not_foreground'),{'snapshot_id':'fresh'}])
+        with patch('bridge_client.time.sleep'):
+            self.assertEqual(c.observe_visible()['snapshot_id'],'fresh')
+        self.assertIsNone(c.last);self.assertEqual(c.observe.call_count,2);c.click.assert_not_called()
+        for error in (BridgeError('device_locked'),OutcomeUnknown('target_not_foreground')):
+            c.observe=Mock(side_effect=error)
+            with self.assertRaises(type(error)):c.observe_visible()
+            c.observe.assert_called_once();c.click.assert_not_called()
+        c.observe=Mock(side_effect=BridgeError('target_not_foreground'))
+        with patch('bridge_client.time.sleep'),patch('bridge_client.time.monotonic',side_effect=[0,0,3]):
+            with self.assertRaisesRegex(BridgeError,'target_not_foreground'):c.observe_visible()
+        self.assertEqual(c.observe.call_count,2);c.click.assert_not_called()
+
     def test_display_identity_cannot_silently_change(self):
         c = Client(8794, display_id=3)
         c.rpc = Mock(return_value=state('wrong', {'0':node()}))

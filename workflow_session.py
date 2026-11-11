@@ -129,6 +129,10 @@ class Runner:
             if 'expect' in step and self.present(step['expect']):
                 raise BridgeError('Postcondition already present; inspect progress before replaying')
             ref=self.click_ref(step['target'])
+            if self.client.display_id:
+                guard=getattr(self.session.control.adb,'check_visible',None)
+                if guard is None:raise BridgeError('Secondary semantic input requires the display visibility guard')
+                guard()
             self.clicks+=1
             try:result=self.client.click(self.client.last['snapshot_id'],ref)
             except BridgeError as error:

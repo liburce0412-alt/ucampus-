@@ -102,6 +102,17 @@ class Client:
                 raise OutcomeUnknown("Click outcome unknown; inspect a fresh screen before deciding. Never automatically retry.") from exc
             raise BridgeError("Bridge connection failed; service and ADB forward must already be ready.") from exc
 
+    def observe_visible(self,wait_ms=0,full=False):
+        """Wait up to three seconds for a readable target; never repeat input."""
+        deadline=time.monotonic()+3
+        while True:
+            try:return self.observe(wait_ms=wait_ms,full=full)
+            except BridgeError as error:
+                if (type(error) is not BridgeError or str(error) not in ('no_active_window','target_not_foreground')
+                        or time.monotonic()>=deadline):raise
+                self.last=None
+                time.sleep(.15)
+
     def observe(self, wait_ms=0, full=False):
         if type(wait_ms) is not int or not 0 <= wait_ms <= 5000 or type(full) is not bool:
             raise ValueError("wait_ms must be 0..5000 and full must be boolean")

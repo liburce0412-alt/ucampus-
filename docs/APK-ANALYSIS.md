@@ -14,7 +14,7 @@
 
 `UCAudioPlugin` 静态状态值：PREPARED=3、PLAYING=4、PROGRESS=5、PAUSE=6、AUTOCOMPLETE=8、ERROR=9。`UCPcmPlugin` 为 PLAYING=1、PAUSED=2、STOPPED=3、BUFFERING=4、FINISHED=5、ERROR=9，两套值不能混用。PCM 桥是播放路径，不是把电脑声音送进麦克风的直接接口；当前直送实现使用独立 UID 音频策略。
 
-实机跟读曾观察到 `准备中…` → `录音中 点击提交` → `已提交 等待评分` → `重录`。提交文字曾早于录音可继续/保存，因此跟读执行器等待重录入口，再以进入下一阶段验收，不用数值分数作流程阻塞。
+实机跟读曾观察到 `准备中…` → `录音中 点击提交` → `已提交 等待评分` → `重录`。提交文字可能早于保存，不能独立证明平台完成。2026-11-11 实测立即切句会丢失部分录音，因此最终版恢复重录入口作为保存门控，快速模式仍不读取数值分数。最终以实际阶段推进与周计数验收；保存异常只根据平台明确缺失状态补齐，不盲目重发。
 
 SOE 的结果字段包括 `audioUrl`、`audioSOEUrl`、`recordLocalPath`、`duration`、`params`、`result`、`scores`、`recordId`、`userId`。只保留字段名；不读取或公开其中的身份值、带签名媒体地址、令牌或录音内容。
 

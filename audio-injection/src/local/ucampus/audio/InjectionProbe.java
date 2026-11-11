@@ -18,11 +18,13 @@ import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** One UID, one short PCM clip, no speaker output or persistent settings. */
+/** One UID, one bounded PCM clip, no speaker output or persistent settings. */
 public final class InjectionProbe {
     private static final String TARGET = "cn.unipus.cloud";
     private static final String PCM = "/data/local/tmp/ucampus-audio-input.pcm";
     private static final int RATE = 16000;
+    private static final int DEFAULT_MAX_SECONDS = 20;
+    private static final int MAX_INJECTION_SECONDS = 120;
 
     private static void event(String phase, Object... pairs) throws Exception {
         JSONObject row = new JSONObject().put("phase", phase);
@@ -35,8 +37,8 @@ public final class InjectionProbe {
         return target.getClass().getMethod(method, types).invoke(target, args);
     }
 
-    private static void play(AudioTrack track, byte[] pcm) throws Exception {
-        long deadline = SystemClock.elapsedRealtime() + 22000;
+    private static void play(AudioTrack track, byte[] pcm, int maxSeconds) throws Exception {
+        long deadline = SystemClock.elapsedRealtime() + maxSeconds * 1000L + 2000;
         int offset = 0;
         track.play();
         while (offset < pcm.length && SystemClock.elapsedRealtime() < deadline) {
@@ -79,22 +81,26 @@ public final class InjectionProbe {
 
     public static void main(String[] args) throws Exception {
         boolean capturing = args.length == 3 && args[0].equals("capture");
-        if (!capturing && (args.length != 2 || !(args[0].equals("check") || args[0].equals("inject"))))
-            throw new IllegalArgumentException("check|inject exact_uid; capture exact_uid seconds");
+        final boolean inject = (args.length == 2 || args.length == 3) && args[0].equals("inject");
+        if (!capturing && !inject && !(args.length == 2 && args[0].equals("check")))
+            throw new IllegalArgumentException("check exact_uid; inject exact_uid [max_seconds]; capture exact_uid seconds");
         final int seconds = capturing ? Integer.parseInt(args[2]) : 0;
         if (capturing && (seconds < 1 || seconds > 900)) throw new IllegalArgumentException("Capture duration must be 1..900 seconds");
+        final int maxSeconds = inject && args.length == 3 ? Integer.parseInt(args[2]) : DEFAULT_MAX_SECONDS;
+        if (maxSeconds < 1 || maxSeconds > MAX_INJECTION_SECONDS) throw new IllegalArgumentException("Injection duration must be 1..120 seconds");
         final int uid = Integer.parseInt(args[1]);
         if (uid < 10000 || Process.myUid() != 2000) throw new SecurityException("Use the authorized shell and an application UID");
-        final boolean inject = args[0].equals("inject");
         byte[] pcm = null;
         if (inject) {
             File input = new File(PCM);
-            if (!input.getCanonicalPath().equals(PCM) || input.length() < 2 || input.length() > RATE * 2 * 20 || input.length() % 2 != 0)
+            if (!input.getCanonicalPath().equals(PCM) || input.length() < 2 || input.length() > RATE * 2 * maxSeconds || input.length() % 2 != 0)
                 throw new IllegalArgumentException("Expected a bounded mono PCM16 clip at the exact test path");
             pcm = Files.readAllBytes(input.toPath());
+            if (pcm.length < 2 || pcm.length > RATE * 2 * maxSeconds || pcm.length % 2 != 0)
+                throw new IllegalArgumentException("PCM changed outside its duration bound");
         }
         Thread watchdog = new Thread(() -> {
-            SystemClock.sleep(capturing ? (seconds + 15) * 1000L : 45000);
+            SystemClock.sleep(capturing ? (seconds + 15) * 1000L : (maxSeconds + 25) * 1000L);
             System.err.println("Audio probe exceeded its deadline; binder death must release its policy");
             Process.killProcess(Process.myPid());
         }, "injection-deadline");
@@ -155,13 +161,17 @@ public final class InjectionProbe {
                 stage = "create-track";
                 track = (AudioTrack)policyType.getMethod("createAudioTrackSource", mixType).invoke(policy, mix);
                 if (track == null || track.getState() != AudioTrack.STATE_INITIALIZED) throw new IllegalStateException("Injection AudioTrack is not initialized");
-                event("ready", "uid", uid, "user", user, "pid", Process.myPid(), "mode", args[0]);
+                event("ready", "uid", uid, "user", user, "pid", Process.myPid(), "mode", args[0],
+                      "max_supported_seconds", MAX_INJECTION_SECONDS, "max_seconds", maxSeconds,
+                      "pcm_bytes", pcm == null ? 0 : pcm.length,
+                      "duration_ms", pcm == null ? 0 : (pcm.length * 1000L + RATE * 2 - 1) / (RATE * 2),
+                      "rate", RATE, "channels", 1);
             }
             if (inject) {
                 stage = "wait-play";
                 if (System.in.read() != 'P') throw new IOException("Missing explicit play command");
                 stage = "play";
-                play(track, pcm);
+                play(track, pcm, maxSeconds);
                 stage = "wait-stop";
                 if (System.in.read() != 'X') throw new IOException("Missing release command");
             }
