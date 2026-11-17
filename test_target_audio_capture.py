@@ -13,11 +13,11 @@ from target_audio_capture import receive,stop_on_file,main
 
 
 class TargetCaptureTests(unittest.TestCase):
-    def run_rows(self,rows):
+    def run_rows(self,rows,seconds=1):
         output=io.BytesIO();log=io.StringIO();ready=[]
         with wave.open(output,'wb') as wav:
             wav.setnchannels(1);wav.setsampwidth(2);wav.setframerate(16000)
-            result=receive([json.dumps(r).encode() for r in rows],wav,10368,1,log,ready.append)
+            result=receive([json.dumps(r).encode() for r in rows],wav,10368,seconds,log,ready.append)
         return result,output,log,ready
 
     def rows(self):
@@ -37,6 +37,32 @@ class TargetCaptureTests(unittest.TestCase):
         rows=self.rows();rows[0]['uid']=2000
         with self.assertRaises(ValueError):self.run_rows(rows)
         with self.assertRaises(ValueError):self.run_rows(self.rows()[1:])
+
+    def test_long_capture_requires_matching_capability_and_confirms_early_release(self):
+        rows=self.rows();rows[0].update(seconds=7200,max_supported_seconds=7200);rows[2]['stopped']=True
+        result,output,_,ready=self.run_rows(rows,7200)
+        self.assertTrue(result['stopped']);self.assertTrue(result['policy_released'])
+        self.assertEqual(result['bytes'],3200);self.assertEqual(ready[0]['seconds'],7200)
+        output.seek(0)
+        with wave.open(output,'rb') as wav:self.assertEqual(wav.getnframes(),1600)
+        self.assertTrue(self.run_rows(self.rows(),900)[0]['policy_released'])
+        for capability in ({},{'seconds':7200,'max_supported_seconds':900},
+                           {'seconds':900,'max_supported_seconds':7200},
+                           {'seconds':7200,'max_supported_seconds':7201},
+                           {'seconds':True,'max_supported_seconds':7200}):
+            with self.subTest(capability=capability):
+                bad=self.rows();bad[0].update(capability);ready=[]
+                with self.assertRaises(ValueError):
+                    receive([json.dumps(r).encode() for r in bad],Mock(),10368,7200,io.StringIO(),ready.append)
+                self.assertEqual(ready,[])
+
+    def test_capture_cli_rejects_out_of_range_duration_before_device_access(self):
+        for seconds in ('0','7201'):
+            with self.subTest(seconds=seconds),tempfile.TemporaryDirectory() as directory:
+                output=Path(directory)/'capture'
+                with patch('sys.argv',['target_audio_capture.py','--uid','10368','--seconds',seconds,'--output',str(output)]),patch('sys.stderr',io.StringIO()),patch('target_audio_capture.subprocess.Popen') as spawn:
+                    with self.assertRaises(SystemExit) as error:main()
+                self.assertEqual(error.exception.code,2);spawn.assert_not_called();self.assertFalse(output.exists())
 
     def test_missing_release_bad_samples_and_mismatched_counts_are_rejected(self):
         with self.assertRaises(RuntimeError):self.run_rows(self.rows()[:-1])

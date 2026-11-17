@@ -11,6 +11,8 @@ import wave
 
 from audio_injection_trial import REMOTE_CLASSPATH
 
+MAX_CAPTURE_SECONDS=7200
+
 
 def stop_on_file(process,path,finished,report):
     while not finished.wait(.1) and process.poll() is None:
@@ -45,6 +47,12 @@ def receive(lines,wav,uid,seconds,log,on_ready):
         if phase=='ready':
             if ready or row.get('uid')!=uid or row.get('mode')!='capture' or row.get('rate')!=16000 or row.get('channels')!=1:
                 raise ValueError('Unexpected capture identity or format')
+            legacy=not {'seconds','max_supported_seconds'}.intersection(row)
+            if not (legacy and seconds<=900):
+                supported=row.get('max_supported_seconds')
+                if (type(row.get('seconds')) is not int or row['seconds']!=seconds or
+                        type(supported) is not int or not seconds<=supported<=MAX_CAPTURE_SECONDS):
+                    raise ValueError('Capture duration capability differs; update/check the probe before playback')
             ready=True;on_ready(row)
         elif phase=='captured':
             if not ready or completed or row.get('bytes')!=total:raise ValueError('Capture byte count mismatch')
@@ -68,7 +76,7 @@ def main():
     parser.add_argument('--stop-file',type=Path,help='Create this file to stop normally; default: OUTPUT/capture.stop')
     parser.add_argument('--skill',type=Path,default=SKILL)
     args=parser.parse_args()
-    if args.uid<10000 or not 1<=args.seconds<=900 or args.output.exists():parser.error('Use an application UID, 1..900 seconds and a fresh output directory')
+    if args.uid<10000 or not 1<=args.seconds<=MAX_CAPTURE_SECONDS or args.output.exists():parser.error('Use an application UID, 1..7200 seconds and a fresh output directory')
     stop_file=(args.stop_file or args.output/'capture.stop').resolve()
     if stop_file.exists():parser.error('The stop file already exists; use a fresh path')
     sys.path.insert(0,str(args.skill.resolve(strict=True)/'scripts'))

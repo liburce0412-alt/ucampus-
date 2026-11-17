@@ -25,6 +25,7 @@ public final class InjectionProbe {
     private static final int RATE = 16000;
     private static final int DEFAULT_MAX_SECONDS = 20;
     private static final int MAX_INJECTION_SECONDS = 120;
+    private static final int MAX_CAPTURE_SECONDS = 7200;
 
     private static void event(String phase, Object... pairs) throws Exception {
         JSONObject row = new JSONObject().put("phase", phase);
@@ -62,7 +63,8 @@ public final class InjectionProbe {
         input.start();
         recorder.startRecording();
         if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) throw new IOException("Capture did not start");
-        event("ready", "uid", uid, "user", user, "pid", Process.myPid(), "mode", "capture", "rate", RATE, "channels", 1);
+        event("ready", "uid", uid, "user", user, "pid", Process.myPid(), "mode", "capture", "rate", RATE, "channels", 1,
+              "seconds", seconds, "max_supported_seconds", MAX_CAPTURE_SECONDS);
         byte[] buffer = new byte[3200];
         long deadline = SystemClock.elapsedRealtime() + seconds * 1000L;
         int total = 0;
@@ -85,7 +87,7 @@ public final class InjectionProbe {
         if (!capturing && !inject && !(args.length == 2 && args[0].equals("check")))
             throw new IllegalArgumentException("check exact_uid; inject exact_uid [max_seconds]; capture exact_uid seconds");
         final int seconds = capturing ? Integer.parseInt(args[2]) : 0;
-        if (capturing && (seconds < 1 || seconds > 900)) throw new IllegalArgumentException("Capture duration must be 1..900 seconds");
+        if (capturing && (seconds < 1 || seconds > MAX_CAPTURE_SECONDS)) throw new IllegalArgumentException("Capture duration must be 1..7200 seconds");
         final int maxSeconds = inject && args.length == 3 ? Integer.parseInt(args[2]) : DEFAULT_MAX_SECONDS;
         if (maxSeconds < 1 || maxSeconds > MAX_INJECTION_SECONDS) throw new IllegalArgumentException("Injection duration must be 1..120 seconds");
         final int uid = Integer.parseInt(args[1]);
