@@ -101,7 +101,7 @@ class WorkerTests(unittest.TestCase):
                 nodes.update({f'0.{i+3}':node(value,400,1500+i*150) for i,value in enumerate(values)})
                 if phase.endswith('_done'):nodes['0.9']=node('下一题')
             else:
-                nodes['0.1']=node(word,100,800,1100);nodes['0.2']=node('点击跟读')
+                nodes['0.1']=node(word,100,800,1100 if state['number']==0 else 180);nodes['0.2']=node('点击跟读')
                 if phase=='recorded':nodes['0.3']=node('下一题' if state['number']==0 else '进入While-listening')
             worker.client.nodes=nodes;worker.client.last={'snapshot_id':'fresh','truncated':False}
         def click(snapshot,ref):

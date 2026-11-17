@@ -194,7 +194,7 @@ class Worker:
                 click(meanings[selected],meanings);wait_text({'下一题'});click('下一题',[meanings[selected],'下一题'])
                 wait_text({'点击跟读'});nodes=observe()
                 heads=[n['text'] for n in nodes.values() if re.fullmatch(r'[A-Za-z]+(?:[ -][A-Za-z]+)*',str(n.get('text') or ''))
-                       and n['bounds'][2]-n['bounds'][0]>=900 and 700<n['bounds'][1]<1100]
+                       and 700<n['bounds'][1]<1100]
                 if len(heads)!=1 or not same_headword(word,heads[0]):raise BridgeError('Recording headword changed')
                 word=heads[0]
                 speech=self.root/'speech';speech.mkdir(exist_ok=True)
