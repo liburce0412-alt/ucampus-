@@ -10,7 +10,7 @@ import numpy as np
 
 from bridge_client import BridgeError
 from screen_frames import check_display_visible
-from training_worker import Worker,choices,spoken_choice
+from training_worker import Worker,choices,spoken_choice,same_headword
 from bridge_client import Client
 
 
@@ -21,13 +21,21 @@ class WorkerTests(unittest.TestCase):
         self.worker.root=Path(self.temp.name)
         self.worker.args=SimpleNamespace(display_deadline=None,skill=Path('.'))
         self.worker.client=SimpleNamespace(nodes={'0':{'text':'Question one'}})
-        self.worker.request=0;self.worker.sequence=0;self.worker.event=Mock()
+        self.worker.request=0;self.worker.sequence=0
         self.worker.receive=Mock();self.worker.emit=Mock()
 
     def test_only_unique_complete_candidates_are_automatic(self):
         self.assertEqual(spoken_choice('It was an original idea.',['original','origin','novel']),0)
         self.assertIsNone(spoken_choice('Original or novel?', ['original','origin','novel']))
         self.assertIsNone(spoken_choice('It was originally made.', ['original','origin','novel']))
+
+    def test_recording_head_accepts_exact_or_regular_plural_only(self):
+        for selected,head in (('Academy','academy'),('academies','academy'),('facilities','facility'),
+                              ('boxes','box'),('buses','bus'),('days','day'),('ideas','idea')):
+            with self.subTest(selected=selected,head=head):self.assertTrue(same_headword(selected,head))
+        for selected,head in (('academyes','academy'),('citys','city'),('days','date'),
+                              ('children','child'),('is','i'),('academy','academies')):
+            with self.subTest(selected=selected,head=head):self.assertFalse(same_headword(selected,head))
 
     def test_options_require_three_unique_inspected_rows(self):
         rows={str(i):{'text':s,'bounds':[400,1500+i*100,1200,1550+i*100]} for i,s in enumerate(('one','two','three'))}
@@ -42,6 +50,9 @@ class WorkerTests(unittest.TestCase):
             return {'request_id':message['request_id'],'choice':'B'}
         self.worker.receive.side_effect=answer
         self.assertEqual(self.worker.decide(runner,'meaning',['a','b','c'],{'word':'test'}),1)
+        event=json.loads((self.worker.root/'events.jsonl').read_text(encoding='utf-8'))
+        self.assertEqual((event['kind'],event['decision_kind']),('decision','meaning'))
+        self.assertGreaterEqual(event['seconds'],0)
         self.worker.receive.return_value={'request_id':'stale','choice':'A'};self.worker.receive.side_effect=None
         with self.assertRaisesRegex(BridgeError,'Stale'):self.worker.decide(runner,'meaning',['a','b','c'],{})
         def changed(timeout):
@@ -75,18 +86,18 @@ class WorkerTests(unittest.TestCase):
                 wav.setnchannels(1);wav.setsampwidth(2);wav.setframerate(16000);wav.writeframes(b'\0\4'*16000*seconds)
         audio(1);source.with_name('ready.json').write_text(json.dumps({'uid':10001,'mode':'capture'}))
         worker.args.uid=10001;worker.args.option_bounds=[300,1400,1440,2200];worker.args.xy=[720,2320]
-        worker.runtime=Mock();worker.warm=Mock();worker.text=Mock(side_effect=['alpha','delta'])
+        worker.runtime=Mock();worker.warm=Mock();worker.text=Mock(side_effect=['alphas','delta'])
         worker.parts=SimpleNamespace(read_part=Mock(return_value=np.r_[np.ones(16000)*.1,np.zeros(8000)]))
         worker.client=Client(8794);worker.session=SimpleNamespace(client=worker.client)
-        state={'number':0,'phase':'intro'};names=['alpha','delta']
+        state={'number':0,'phase':'intro'};names=['alpha','delta'];heard_names=['alphas','delta']
         def node(text,x=50,y=100,width=200):
             return {'text':text,'enabled':True,'clickable':True,'bounds':[x,y,x+width,y+50]}
         def observe(**kwargs):
             phase=state['phase'];word=names[state['number']];nodes={'0':node('Pre-listening')}
             if phase=='intro':nodes['0.1']=node('进入 Pre-listening')
             elif phase in ('heard','heard_done','meaning','meaning_done'):
-                if phase.startswith('heard'):values=[word,'bravo','charlie'];nodes['0.1']=node('点击播放')
-                else:values=['意思一','意思二','意思三'];nodes['0.1']=node('选出加粗单词或短语的释义');nodes['0.2']=node(word)
+                if phase.startswith('heard'):values=[heard_names[state['number']],'bravo','charlie'];nodes['0.1']=node('点击播放')
+                else:values=['意思一','意思二','意思三'];nodes['0.1']=node('选出加粗单词或短语的释义');nodes['0.2']=node(heard_names[state['number']])
                 nodes.update({f'0.{i+3}':node(value,400,1500+i*150) for i,value in enumerate(values)})
                 if phase.endswith('_done'):nodes['0.9']=node('下一题')
             else:
@@ -105,12 +116,17 @@ class WorkerTests(unittest.TestCase):
             return {'dispatched':True}
         worker.client.observe=Mock(side_effect=observe);worker.client.click=Mock(side_effect=click)
         worker.receive.side_effect=lambda timeout:{'request_id':worker.emit.call_args.args[0]['request_id'],'choice':'A'}
-        def inject(*args):state['phase']='recorded';return {'policy_released':True,'elapsed_seconds':2}
+        def inject(*args):
+            self.assertEqual(Path(args[2]).with_suffix('.txt').read_text(encoding='utf-8').strip(),names[state['number']])
+            state['phase']='recorded';return {'policy_released':True,'elapsed_seconds':2}
         with patch('training_worker.time.sleep',side_effect=lambda _:audio(2)),patch('training_worker.subprocess.run',return_value=SimpleNamespace(stdout='{"backend":"sapi"}')),patch('training_worker.inject_once',side_effect=inject) as injection:
             result=worker.pre({'command':'pre','capture':str(source),'enter':True},worker.root/'stage')
         self.assertEqual(result['status'],'complete');self.assertEqual(result['completed_words'],2)
         self.assertEqual(worker.request,2);self.assertEqual(injection.call_count,2)
         self.assertEqual([call.args[0]['kind'] for call in worker.emit.call_args_list],['meaning','meaning'])
+        events=[json.loads(line) for line in (worker.root/'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(sum(row['kind']=='decision' and row['decision_kind']=='meaning' for row in events),2)
+        self.assertEqual(sum(row['kind']=='word_complete' for row in events),2)
 
 
 class VisibilityTests(unittest.TestCase):

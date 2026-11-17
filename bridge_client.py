@@ -108,7 +108,7 @@ class Client:
         while True:
             try:return self.observe(wait_ms=wait_ms,full=full)
             except BridgeError as error:
-                if (type(error) is not BridgeError or str(error) not in ('no_active_window','target_not_foreground')
+                if (type(error) is not BridgeError or str(error) not in ('no_active_window','target_not_foreground','ui_changed_during_capture')
                         or time.monotonic()>=deadline):raise
                 self.last=None
                 time.sleep(.15)

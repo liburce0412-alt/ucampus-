@@ -34,6 +34,21 @@ class PreparedControlTests(unittest.TestCase):
             with self.assertRaisesRegex(BridgeError,'target_not_foreground'):c.observe_visible()
         self.assertEqual(c.observe.call_count,2);c.click.assert_not_called()
 
+    def test_visible_wait_survives_capture_drift_but_keeps_its_deadline(self):
+        c=Client(8794,display_id=7);c.click=Mock();c.last={'snapshot_id':'old','revision':1}
+        error=BridgeError('ui_changed_during_capture')
+        fresh={**state('fresh',{'0':node()}),'display_id':7}
+        c.rpc=Mock(side_effect=[error,error,error,fresh])
+        with patch('bridge_client.time.sleep'):
+            self.assertEqual(c.observe_visible()['snapshot_id'],'fresh')
+        self.assertEqual(c.rpc.call_count,4)
+        c.rpc.assert_called_with('snapshot')
+        self.assertEqual(c.last['snapshot_id'],'fresh');c.click.assert_not_called()
+        c.rpc=Mock(side_effect=error)
+        with patch('bridge_client.time.sleep'),patch('bridge_client.time.monotonic',side_effect=[0,0,3]):
+            with self.assertRaisesRegex(BridgeError,'ui_changed_during_capture'):c.observe_visible()
+        self.assertEqual(c.rpc.call_count,6);c.click.assert_not_called()
+
     def test_display_identity_cannot_silently_change(self):
         c = Client(8794, display_id=3)
         c.rpc = Mock(return_value=state('wrong', {'0':node()}))

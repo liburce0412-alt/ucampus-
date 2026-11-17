@@ -36,6 +36,17 @@ def spoken_choice(transcript,options):
     return matches[0] if len(matches)==1 else None
 
 
+def same_headword(selected,head):
+    selected,head=selected.casefold().strip(),head.casefold().strip()
+    if selected==head:return True
+    if len(head)<2:return False
+    # shortcut: only regular plurals are accepted; review irregular or other word changes separately.
+    if head.endswith('y') and head[-2] not in 'aeiou':plural=head[:-1]+'ies'
+    elif head.endswith(('s','x','z','ch','sh')):plural=head+'es'
+    else:plural=head+'s'
+    return selected==plural
+
+
 def page_key(nodes):
     # Include the question and progress text, not just A/B/C; animation-only bounds may move.
     return sorted((str(n.get('text') or ''),str(n.get('description') or ''))
@@ -106,7 +117,7 @@ class Worker:
             raise BridgeError('Stale or malformed decision; no answer was clicked')
         runner.observe()
         if page_key(self.client.nodes)!=key:raise BridgeError('Question changed while waiting for a decision')
-        self.event('decision',kind=kind,seconds=round(time.monotonic()-began,3))
+        self.event('decision',decision_kind=kind,seconds=round(time.monotonic()-began,3))
         return ord(answer['choice'])-ord('A')
 
     def event(self,kind,**values):
@@ -184,7 +195,8 @@ class Worker:
                 wait_text({'点击跟读'});nodes=observe()
                 heads=[n['text'] for n in nodes.values() if re.fullmatch(r'[A-Za-z]+(?:[ -][A-Za-z]+)*',str(n.get('text') or ''))
                        and n['bounds'][2]-n['bounds'][0]>=900 and 700<n['bounds'][1]<1100]
-                if len(heads)!=1 or heads[0].casefold()!=word.casefold():raise BridgeError('Recording headword changed')
+                if len(heads)!=1 or not same_headword(word,heads[0]):raise BridgeError('Recording headword changed')
+                word=heads[0]
                 speech=self.root/'speech';speech.mkdir(exist_ok=True)
                 key=hashlib.sha256(word.encode()).hexdigest()[:16];audio=speech/(key+'.wav')
                 if not audio.exists():
