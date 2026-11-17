@@ -147,6 +147,30 @@ class InjectionTests(unittest.TestCase):
         injector.events.put({'phase':'error','stage':'register'})
         with self.assertRaises(RuntimeError):injector.wait('ready',1)
 
+    def test_hold_release_keeps_primary_failure_and_never_hides_a_lone_cleanup_error(self):
+        for failed_action in (True,False):
+            with self.subTest(failed_action=failed_action),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);wav=root/'speech.wav';wav.touch()
+                normal_adb=Mock();control=SimpleNamespace(adb=normal_adb,play_audio=Mock())
+                session=SimpleNamespace(control=control,check_audio=Mock())
+                runtime=SimpleNamespace(serial=lambda:'device',adb_path=lambda:'adb',adb=Mock())
+                injector=Mock();injector.wait.return_value={'uid':10001,'mode':'inject'}
+                cleanup=RuntimeError('Probe exited after cancellation')
+                injector.close.side_effect=[cleanup,None]
+                primary=ValueError('Hold state missing; no audio played')
+                def action():
+                    try:
+                        if failed_action:raise primary
+                        return {'completed':True}
+                    finally:control.adb('shell','input','motionevent','UP','720','2970')
+                with patch('audio_injection_trial.pcm16',return_value=b'\x01\x00'*160),patch('audio_injection_trial.Injector',return_value=injector),patch('audio_injection_trial.subprocess.run',return_value=SimpleNamespace(returncode=1)):
+                    with self.assertRaises(ValueError if failed_action else RuntimeError) as raised:
+                        inject_once(session,runtime,wav,10001,root/'run',action)
+                self.assertIs(raised.exception,primary if failed_action else cleanup)
+                if failed_action:self.assertIn('cancellation',raised.exception.__notes__[0])
+                normal_adb.assert_called_once_with('shell','input','motionevent','UP','720','2970')
+                injector.play.assert_not_called();self.assertIs(control.adb,normal_adb)
+
     def test_release_event_requires_unregistered_policy_status(self):
         injector=Injector.__new__(Injector)
         injector.events=queue.Queue();injector.log=io.StringIO()

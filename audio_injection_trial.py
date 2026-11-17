@@ -176,25 +176,27 @@ def inject_once(session,runtime,wav,uid,output,action,max_seconds=DEFAULT_MAX_SE
         runtime.adb('push',str(local),REMOTE_PCM)
         with (output/'injection.jsonl').open('x',encoding='utf-8') as log:
             injector=Injector(runtime.adb_path(),runtime.serial(),uid,log,max_seconds)
-            try:
-                injection_ready(injector.wait('ready',12),uid,len(pcm),max_seconds)
-                control.play_audio=injector.play
-                control.release_audio=injector.close
-                def check_prepared(path):
-                    if Path(path).resolve()!=wav:raise ValueError('Unexpected speech file')
-                session.check_audio=check_prepared
-                def input_and_release(*command):
-                    value=normal_adb(*command)
-                    if command[:4]==('shell','input','motionevent','UP'):injector.close()
-                    return value
-                control.adb=input_and_release
-                result=action()
-            finally:
+            def release():
                 failure=sys.exception()
                 try:injector.close()
                 except Exception as cleanup_error:
                     if failure is None:raise
                     failure.add_note('Audio cleanup also failed: '+str(cleanup_error))
+            try:
+                injection_ready(injector.wait('ready',12),uid,len(pcm),max_seconds)
+                control.play_audio=injector.play
+                control.release_audio=release
+                def check_prepared(path):
+                    if Path(path).resolve()!=wav:raise ValueError('Unexpected speech file')
+                session.check_audio=check_prepared
+                def input_and_release(*command):
+                    value=normal_adb(*command)
+                    if command[:4]==('shell','input','motionevent','UP'):release()
+                    return value
+                control.adb=input_and_release
+                result=action()
+            finally:
+                release()
         return {**result,'source':str(wav),'digital_pcm_bytes':len(pcm),'digital_audio_seconds':len(pcm)/32000,
                 'max_seconds':max_seconds,'policy_released':True,
                 'speaker_playback':False,'audio_content_verified':False}
