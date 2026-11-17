@@ -92,10 +92,12 @@ class Runner:
     def observe(self,wait_ms=0,*,during_wait=False):
         if self.stop.exists():raise Paused('Pause requested; inspect the checkpoint before moving the task')
         self.reads+=1
-        try:self.client.observe(wait_ms=wait_ms)
+        try:
+            if during_wait:self.client.observe(wait_ms=wait_ms)
+            else:self.client.observe_visible(wait_ms=wait_ms)
         except BridgeError as error:
-            if not during_wait or type(error) is not BridgeError or str(error)!='no_active_window':raise
-            # Navigation can briefly remove the root; only bounded readback loops may wait.
+            if not during_wait or type(error) is not BridgeError or str(error) not in ('no_active_window','ui_changed_during_capture'):raise
+            # Reuse the caller's deadline while navigation or animation changes the tree.
             self.client.last=None;self.transition_reads+=1
             time.sleep(.15)
             return False
@@ -122,9 +124,10 @@ class Runner:
             ref=ref.rpartition('.')[0]
         raise BridgeError('No semantic clickable control; inspect the layout instead of guessing coordinates')
 
-    def click(self,step):
+    def click(self,step,*,guard=None):
         for attempt in range(3):
             self.observe();self.anchors(step['before'])
+            if guard is not None:guard()
             if step['action']=='select' and self.selected(step['target']):return False
             if 'expect' in step and self.present(step['expect']):
                 raise BridgeError('Postcondition already present; inspect progress before replaying')

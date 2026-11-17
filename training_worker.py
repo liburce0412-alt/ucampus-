@@ -158,6 +158,11 @@ class Worker:
         def observe():self.check();runner.observe();return self.client.nodes
         def click(target,before):
             runner.click({'action':'click','before':[{'text':t} for t in before],'target':{'text':target}})
+        def headword(selected):
+            heads=[n['text'] for n in self.client.nodes.values()
+                   if re.fullmatch(r'[A-Za-z]+(?:[ -][A-Za-z]+)*',str(n.get('text') or '')) and 700<n['bounds'][1]<1100]
+            if len(heads)!=1 or not same_headword(selected,heads[0]):raise BridgeError('Recording headword changed')
+            return heads[0]
         def wait_text(names,timeout=30):
             deadline=time.monotonic()+timeout
             while time.monotonic()<deadline:
@@ -192,11 +197,7 @@ class Worker:
                 wait_text({'选出加粗单词或短语的释义'});meanings=choices(observe(),self.args.option_bounds)
                 selected=self.decide(runner,'meaning',meanings,{'word':word})
                 click(meanings[selected],meanings);wait_text({'下一题'});click('下一题',[meanings[selected],'下一题'])
-                wait_text({'点击跟读'});nodes=observe()
-                heads=[n['text'] for n in nodes.values() if re.fullmatch(r'[A-Za-z]+(?:[ -][A-Za-z]+)*',str(n.get('text') or ''))
-                       and 700<n['bounds'][1]<1100]
-                if len(heads)!=1 or not same_headword(word,heads[0]):raise BridgeError('Recording headword changed')
-                word=heads[0]
+                wait_text({'点击跟读'});observe();word=headword(word)
                 speech=self.root/'speech';speech.mkdir(exist_ok=True)
                 key=hashlib.sha256(word.encode()).hexdigest()[:16];audio=speech/(key+'.wav')
                 if not audio.exists():
@@ -215,7 +216,10 @@ class Worker:
                 self.event('word_complete',number=number,seconds=result.get('elapsed_seconds'),policy_released=True)
                 if '进入While-listening' in found:
                     report['status']='complete';save();return report
-                start=max(0,position()-.2);click('下一题',[word,'下一题'])
+                start=max(0,position()-.2)
+                # The example sentence repeats the word; verify the heading on each refreshed snapshot.
+                runner.click({'action':'click','before':[{'text':'Pre-listening'},{'text':'跟读单词或短语'},{'text':'下一题'}],
+                              'target':{'text':'下一题'}},guard=lambda:headword(word))
             raise BridgeError('Unexpectedly many Pre words')
         except BaseException as error:
             report.update(status='paused' if isinstance(error,Paused) else 'needs_review',error=str(error));save();raise

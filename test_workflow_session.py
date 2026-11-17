@@ -80,9 +80,23 @@ class WorkflowTests(unittest.TestCase):
         report=json.loads((self.root/'run/checkpoint.json').read_text())
         self.assertEqual(report['transition_reads'],1)
 
-    def test_empty_root_timeout_and_foreign_or_locked_screen_never_reclick(self):
+    def test_animation_before_and_after_click_only_retries_readback(self):
         original=self.client.observe.side_effect
-        for error in ('no_active_window','target_not_foreground','device_locked'):
+        unstable={0,1}
+        def moving(**kwargs):
+            if self.page in unstable:
+                unstable.remove(self.page);raise BridgeError('ui_changed_during_capture')
+            original(**kwargs)
+        self.client.observe.side_effect=moving
+        with patch('bridge_client.time.sleep'):
+            result=self.runner.run({'version':1,'steps':self.plan()['steps'][:1]})
+        self.assertEqual(result['completed'],1);self.client.click.assert_called_once()
+        self.assertEqual(self.runner.transition_reads,1)
+
+    def test_transition_timeout_and_foreign_or_locked_screen_never_reclick(self):
+        original=self.client.observe.side_effect
+        waitable=('no_active_window','ui_changed_during_capture')
+        for error in (*waitable,'target_not_foreground','device_locked'):
             with self.subTest(error=error):
                 self.page=0;self.client.click.reset_mock()
                 self.runner=Runner(self.session,self.root/error,self.root)
@@ -93,10 +107,19 @@ class WorkflowTests(unittest.TestCase):
                 step={**self.plan()['steps'][0],'timeout':1}
                 ticks=iter(range(100))
                 with patch('workflow_session.time.sleep'),patch('workflow_session.time.monotonic',side_effect=lambda:next(ticks)):
-                    with self.assertRaisesRegex(BridgeError,'Expected state' if error=='no_active_window' else error):
+                    with self.assertRaisesRegex(BridgeError,'Expected state' if error in waitable else error):
                         self.runner.run({'version':1,'steps':[step]})
                 self.client.click.assert_called_once()
-                self.assertEqual(self.runner.transition_reads,1 if error=='no_active_window' else 0)
+                self.assertEqual(self.runner.transition_reads,1 if error in waitable else 0)
+
+    def test_question_guard_runs_on_each_snapshot_before_dispatch(self):
+        guard=Mock(side_effect=[None,BridgeError('Recording headword changed')])
+        self.client.click.side_effect=BridgeError('ui_changed')
+        with patch('workflow_session.time.sleep'):
+            with self.assertRaisesRegex(BridgeError,'Recording headword changed'):
+                self.runner.click(self.plan()['steps'][0],guard=guard)
+        self.assertEqual(guard.call_count,2);self.client.click.assert_called_once()
+        self.assertEqual(self.runner.rejected_clicks,1)
 
     def test_rejected_clicks_refresh_the_same_question_before_dispatch(self):
         original=self.client.click.side_effect
