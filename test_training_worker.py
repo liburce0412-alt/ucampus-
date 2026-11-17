@@ -103,6 +103,7 @@ class WorkerTests(unittest.TestCase):
             else:
                 nodes['0.1']=node(word,100,800,1100 if state['number']==0 else 180);nodes['0.2']=node('点击跟读')
                 nodes['0.4']=node('跟读单词或短语');nodes['0.5']=node(word,400,1600)
+                nodes['0.6']=node('n',100,1000)
                 if phase=='recorded':nodes['0.3']=node('下一题' if state['number']==0 else '进入While-listening')
             worker.client.nodes=nodes;worker.client.last={'snapshot_id':'fresh','truncated':False}
         def click(snapshot,ref):

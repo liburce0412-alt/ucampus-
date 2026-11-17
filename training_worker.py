@@ -160,8 +160,9 @@ class Worker:
             runner.click({'action':'click','before':[{'text':t} for t in before],'target':{'text':target}})
         def headword(selected):
             heads=[n['text'] for n in self.client.nodes.values()
-                   if re.fullmatch(r'[A-Za-z]+(?:[ -][A-Za-z]+)*',str(n.get('text') or '')) and 700<n['bounds'][1]<1100]
-            if len(heads)!=1 or not same_headword(selected,heads[0]):raise BridgeError('Recording headword changed')
+                   if re.fullmatch(r'[A-Za-z]+(?:[ -][A-Za-z]+)*',str(n.get('text') or ''))
+                   and 700<n['bounds'][1]<1100 and same_headword(selected,n['text'])]
+            if len(heads)!=1:raise BridgeError('Recording headword changed')
             return heads[0]
         def wait_text(names,timeout=30):
             deadline=time.monotonic()+timeout
